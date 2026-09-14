@@ -653,11 +653,28 @@ function toInjectedFileRef(
 
 /* Stable file identity = `(storage_session_id, id)`. Same name in
  * different storage sessions are distinct files. */
-function fileIdentityKey(file: {
-  storage_session_id?: string;
-  id: string;
-}): string {
-  return `${file.storage_session_id ?? ''}\0${file.id}`;
+function fileIdentityKey(
+  file: {
+    storage_session_id?: string;
+    id: string;
+  },
+  fallbackSessionId = ''
+): string {
+  return `${file.storage_session_id ?? fallbackSessionId}\0${file.id}`;
+}
+
+function codeSessionIdentityByName(
+  context:
+    | t.ToolCallRequest['codeSessionContext']
+    | t.CodeSessionContext
+    | undefined
+): ReadonlyMap<string, string> {
+  return new Map(
+    (context?.files ?? []).map((file) => [
+      file.name,
+      fileIdentityKey(file, context?.session_id),
+    ])
+  );
 }
 
 function updateCodeSession(
@@ -673,6 +690,7 @@ function updateCodeSession(
     | t.CodeSessionContext
     | undefined;
   const existingFiles = existingSession?.files ?? [];
+  const existingSessionId = existingSession?.session_id ?? '';
   const deletedIdentityByName = new Map<string, string>();
   for (const name of deletedFiles ?? []) {
     const identity = baselineIdentityByName?.get(name);
@@ -690,7 +708,8 @@ function updateCodeSession(
       session_id: execSessionId,
       files: existingFiles.filter(
         (file) =>
-          deletedIdentityByName.get(file.name) !== fileIdentityKey(file)
+          deletedIdentityByName.get(file.name) !==
+          fileIdentityKey(file, existingSessionId)
       ),
       lastUpdated: Date.now(),
     });
@@ -703,7 +722,9 @@ function updateCodeSession(
   const filesWithSession: t.FileRefs = [];
   const newFileNames = new Set<string>();
   const incomingByIdentity = new Map<string, number>();
-  const existingIdentities = new Set(existingFiles.map(fileIdentityKey));
+  const existingIdentities = new Set(
+    existingFiles.map((file) => fileIdentityKey(file, existingSessionId))
+  );
   for (const file of newFiles) {
     const withSession = {
       ...file,
@@ -727,12 +748,13 @@ function updateCodeSession(
 
   const filteredExisting: t.FileRefs = [];
   for (const e of existingFiles) {
-    const idx = incomingByIdentity.get(fileIdentityKey(e));
+    const idx = incomingByIdentity.get(fileIdentityKey(e, existingSessionId));
     if (idx !== undefined) {
       filesWithSession[idx] = { ...e, ...filesWithSession[idx] };
     }
     const explicitlyDeleted =
-      deletedIdentityByName.get(e.name) === fileIdentityKey(e);
+      deletedIdentityByName.get(e.name) ===
+      fileIdentityKey(e, existingSessionId);
     if (!newFileNames.has(e.name) && !explicitlyDeleted) {
       filteredExisting.push(e);
     }
@@ -1933,12 +1955,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         ) {
           batchContext.codeSessionBaselineByCallId.set(
             call.id,
-            new Map(
-              (codeSession?.files ?? []).map((file) => [
-                file.name,
-                fileIdentityKey(file),
-              ])
-            )
+            codeSessionIdentityByName(codeSession)
           );
         }
         if (execSessionId != null && execSessionId !== '') {
@@ -3138,7 +3155,11 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     baselineByRequestId: ReadonlyMap<
       string,
       ReadonlyMap<string, string>
-    > = new Map()
+    > = new Map(),
+    executionBaselineByRequestId: ReadonlyMap<
+      string,
+      ReadonlyMap<string, string>
+    > = baselineByRequestId
   ): void {
     if (!this.sessions) {
       return;
@@ -3176,7 +3197,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         execSessionId,
         artifact?.files,
         artifact?.deleted_files,
-        baselineByRequestId.get(request.id)
+        executionBaselineByRequestId.get(request.id)
       );
     }
   }
@@ -3284,7 +3305,11 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         ownership.undispatched.delete(toolCallId);
       }
 
-      if (this.sessions && this.participatesInCodeSession(call.name)) {
+      if (
+        toolMessage.status !== 'error' &&
+        this.sessions &&
+        this.participatesInCodeSession(call.name)
+      ) {
         const artifact = toolMessage.artifact as
           | t.CodeExecutionArtifact
           | undefined;
@@ -4163,12 +4188,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       >(
         plan.allRequests.map((request) => [
           request.id,
-          new Map(
-            (request.codeSessionContext?.files ?? []).map((file) => [
-              file.name,
-              fileIdentityKey(file),
-            ])
-          ),
+          codeSessionIdentityByName(request.codeSessionContext),
         ])
       );
       const eagerExecutions: Array<{
@@ -4370,11 +4390,25 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         ...flattenedEagerResults,
         ...dispatchedResults,
       ];
+      /* Hosts may lazily refresh codeSessionContext while dispatching. The
+       * pre-dispatch snapshot above remains the authority for detecting those
+       * additions, while deletion reconciliation must use the identities the
+       * execution actually received. */
+      const executionBaselineByRequestId = new Map<
+        string,
+        ReadonlyMap<string, string>
+      >(
+        plan.allRequests.map((request) => [
+          request.id,
+          codeSessionIdentityByName(request.codeSessionContext),
+        ])
+      );
 
       this.storeCodeSessionFromResults(
         results,
         requestMap,
-        codeSessionBaselineByRequestId
+        codeSessionBaselineByRequestId,
+        executionBaselineByRequestId
       );
 
       for (const result of results) {
@@ -5044,6 +5078,16 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       ) {
         baseContext.resolvedArgsByCallId.set(call.id, result.resolvedArgs);
       }
+      if (
+        call.id != null &&
+        result.codeSessionBaseline != null &&
+        baseContext.codeSessionBaselineByCallId != null
+      ) {
+        baseContext.codeSessionBaselineByCallId.set(
+          call.id,
+          new Map(result.codeSessionBaseline)
+        );
+      }
       return result;
     };
     const runOne = async (
@@ -5080,6 +5124,10 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         call.id == null
           ? undefined
           : baseContext.resolvedArgsByCallId?.get(call.id);
+      const codeSessionBaseline =
+        call.id == null
+          ? undefined
+          : baseContext.codeSessionBaselineByCallId?.get(call.id);
       const result: SettledDirectToolResult = {
         proposal: structuredClone({
           name: call.name,
@@ -5093,6 +5141,9 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         output,
         additionalContexts,
         ...(resolvedArgs == null ? {} : { resolvedArgs }),
+        ...(codeSessionBaseline == null
+          ? {}
+          : { codeSessionBaseline: [...codeSessionBaseline.entries()] }),
       };
       const refMeta = isBaseMessage(output)
         ? (output.additional_kwargs as t.ToolMessageRefMetadata)
