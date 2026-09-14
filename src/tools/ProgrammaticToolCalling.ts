@@ -954,6 +954,9 @@ export function formatCompletedResponse(
     {
       session_id: response.session_id,
       files: response.files,
+      ...(response.deleted_files != null
+        ? { deleted_files: response.deleted_files }
+        : {}),
       ...(artifactDelivery != null
         ? { artifact_delivery: artifactDelivery }
         : {}),

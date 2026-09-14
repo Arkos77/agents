@@ -382,6 +382,33 @@ describe('CodeAPI auth header injection', () => {
     expect(output).toContain('do not rerun automatically');
   });
 
+  it.each([
+    ['code', createCodeExecutionTool, { lang: 'py', code: 'print(1)' }],
+    ['bash', createBashExecutionTool, { command: 'rm data.csv' }],
+  ] as const)(
+    'preserves deleted file paths in direct %s execution artifacts',
+    async (_kind, createTool, args) => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          session_id: 'session_123',
+          stdout: 'done\n',
+          files: [],
+          deleted_files: ['data.csv'],
+        })
+      );
+      const tool = createTool();
+
+      const result = await tool.invoke({
+        name: tool.name,
+        args,
+        id: 'call-delete',
+        type: 'tool_call',
+      } as never) as { artifact?: t.CodeExecutionArtifact };
+
+      expect(result.artifact?.deleted_files).toEqual(['data.csv']);
+    }
+  );
+
   it('routes direct code tools by trusted per-agent profile', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ session_id: 'session_123', stdout: '1\n' })

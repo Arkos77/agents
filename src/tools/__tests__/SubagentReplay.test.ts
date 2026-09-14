@@ -10,7 +10,14 @@ import {
   stripRunStepResumeState,
 } from '@/tools/runStepResume';
 import type { RunStepResumeState } from '@/types';
-import { attachToolBatchReplayState, getPublicToolInterruptPayload, restoreToolReplayConfig, TOOL_BATCH_REPLAY_KEY } from '@/tools/toolBatchReplay';
+import { ToolMessage } from '@langchain/core/messages';
+import {
+  attachToolBatchReplayState,
+  getPublicToolInterruptPayload,
+  restoreToolBatchReplayState,
+  restoreToolReplayConfig,
+  TOOL_BATCH_REPLAY_KEY,
+} from '@/tools/toolBatchReplay';
 
 describe('SubagentReplay manifest', () => {
   const execution = {
@@ -85,6 +92,40 @@ describe('SubagentReplay manifest', () => {
     const config: Record<string, unknown> = {};
     restoreToolReplayConfig(config, 'interrupt', persisted);
     expect(config[TOOL_BATCH_REPLAY_KEY]).toMatchObject({ records: [{ owner: 'parent' }] });
+  });
+
+  it('round-trips code-session baselines with settled direct results', async () => {
+    const result = {
+      proposal: { name: 'execute_code', args: { code: 'remove()' } },
+      output: new ToolMessage({
+        content: 'removed data.csv',
+        tool_call_id: 'call_delete',
+      }),
+      additionalContexts: [],
+      codeSessionBaseline: [['data.csv', 'storage\0file']] as Array<
+        [string, string]
+      >,
+    };
+    const payload = await attachToolBatchReplayState(
+      null,
+      'parent',
+      new Map([['batch', new Map([['call_delete', result]])]])
+    );
+    const config: Record<string, unknown> = {};
+    restoreToolReplayConfig(
+      config,
+      'interrupt',
+      JSON.parse(JSON.stringify(payload))
+    );
+
+    const restored = await restoreToolBatchReplayState(
+      { configurable: config },
+      'parent'
+    );
+
+    expect(restored[0]?.results[0]?.[1].codeSessionBaseline).toEqual(
+      result.codeSessionBaseline
+    );
   });
 
   it('round-trips a private manifest without exposing it publicly', () => {

@@ -32,6 +32,8 @@ export interface SettledToolBatchResult {
   output: BaseMessage | Command;
   additionalContexts: string[];
   resolvedArgs?: Record<string, unknown>;
+  /** Code-session identities injected into this completed direct call. */
+  codeSessionBaseline?: Array<[string, string]>;
   completionHandled?: boolean;
   referenceContent?: string;
   turn?: number;
@@ -474,6 +476,14 @@ export async function restoreToolBatchReplayState(
               throw new Error('Invalid settled tool batch results');
             }
             const result = entry[1] as Partial<SettledToolBatchResult> | null;
+            const codeSessionBaseline: unknown = (
+              result as { codeSessionBaseline?: unknown } | null
+            )?.codeSessionBaseline;
+            const baselineNames = Array.isArray(codeSessionBaseline)
+              ? codeSessionBaseline.map((pair) =>
+                Array.isArray(pair) ? pair[0] : undefined
+              )
+              : [];
             if (
               result == null ||
               (!isBaseMessage(result.output) && !isCommand(result.output)) ||
@@ -491,7 +501,19 @@ export async function restoreToolBatchReplayState(
               typeof result.proposal.name !== 'string' ||
               result.proposal.name.length === 0 ||
               !isRecord(result.proposal.args) ||
-              (result.resolvedArgs != null && !isRecord(result.resolvedArgs))
+              (result.resolvedArgs != null && !isRecord(result.resolvedArgs)) ||
+              (codeSessionBaseline != null &&
+                (!Array.isArray(codeSessionBaseline) ||
+                  codeSessionBaseline.some(
+                    (pair) =>
+                      !Array.isArray(pair) ||
+                      pair.length !== 2 ||
+                      typeof pair[0] !== 'string' ||
+                      pair[0].length === 0 ||
+                      typeof pair[1] !== 'string' ||
+                      pair[1].length === 0
+                  ) ||
+                  new Set(baselineNames).size !== baselineNames.length))
             ) {
               throw new Error('Invalid settled tool batch results');
             }

@@ -502,6 +502,8 @@ export type ExecuteResult = {
   stdout: string;
   stderr: string;
   files?: FileRefs;
+  /** Persisted input paths explicitly removed during this execution. */
+  deleted_files?: string[];
   artifact_delivery?: ArtifactDeliveryFailure;
   /**
    * Durable runtime session id echoed by a stateful Code API backend
@@ -1346,6 +1348,8 @@ export type ProgrammaticExecutionResponse = {
   stdout?: string;
   stderr?: string;
   files?: FileRefs;
+  /** Persisted input paths explicitly removed during this execution. */
+  deleted_files?: string[];
   artifact_delivery?: ArtifactDeliveryFailure;
 
   /** Durable runtime session echo from a stateful backend (additive). */
@@ -1363,6 +1367,8 @@ export type ProgrammaticExecutionArtifact = {
   /** Execution session — see `CodeSessionContext.session_id`. */
   session_id?: string;
   files?: FileRefs;
+  /** Persisted input paths explicitly removed during this execution. */
+  deleted_files?: string[];
   artifact_delivery?: ArtifactDeliveryFailure;
   /** Durable runtime session echo from a stateful backend (additive). */
   runtime_session_id?: string;
@@ -1439,6 +1445,8 @@ export type CodeExecutionArtifact = {
   /** Execution session — see `CodeSessionContext.session_id`. */
   session_id?: string;
   files?: FileRefs;
+  /** Persisted input paths explicitly removed during this execution. */
+  deleted_files?: string[];
   artifact_delivery?: ArtifactDeliveryFailure;
   /** Durable runtime session echo from a stateful backend (additive). */
   runtime_session_id?: string;

@@ -1023,6 +1023,21 @@ for member in team:
       expect(artifact.files).toEqual([]);
     });
 
+    it('preserves explicit persisted-file deletions in the execution artifact', () => {
+      const response: t.ProgrammaticExecutionResponse = {
+        status: 'completed',
+        stdout: 'removed data.csv\n',
+        stderr: '',
+        files: [],
+        deleted_files: ['data.csv'],
+        session_id: 'sess_delete',
+      };
+
+      const [, artifact] = formatCompletedResponse(response);
+
+      expect(artifact.deleted_files).toEqual(['data.csv']);
+    });
+
     it('shows empty output message when no stdout', () => {
       const response: t.ProgrammaticExecutionResponse = {
         status: 'completed',

@@ -672,6 +672,10 @@ function createCodeExecutionTool(
           artifactDelivery
         );
         const hasFiles = result.files != null && result.files.length > 0;
+        const deletionEcho =
+          result.deleted_files != null
+            ? { deleted_files: result.deleted_files }
+            : {};
         /* Echo the durable runtime session (stateful backends only) so hosts
          * can surface a "session active / was reset" signal later. Additive:
          * absent on stateless servers. */
@@ -691,6 +695,7 @@ function createCodeExecutionTool(
               ...(artifactDelivery != null
                 ? { artifact_delivery: artifactDelivery }
                 : {}),
+              ...deletionEcho,
               ...runtimeEcho,
             }
             : {
@@ -698,6 +703,7 @@ function createCodeExecutionTool(
               ...(artifactDelivery != null
                 ? { artifact_delivery: artifactDelivery }
                 : {}),
+              ...deletionEcho,
               ...runtimeEcho,
             }) satisfies t.CodeExecutionArtifact,
         ];
