@@ -21,6 +21,7 @@ import {
   resolveCodeApiAuthHeaders,
   selectRuntimeSessionHint,
 } from './CodeExecutor';
+import { appendExecutionArtifactFileSummary } from './CodeSessionFileSummary';
 import {
   assertUnambiguousIdentifiers,
   projectProgrammaticToolMap,
@@ -860,7 +861,8 @@ export async function executeTools(
  */
 export function formatCompletedResponse(
   response: t.ProgrammaticExecutionResponse,
-  sourceCode = ''
+  sourceCode = '',
+  filePersistence: 'session' | 'execution' = 'session'
 ): [string, t.ProgrammaticExecutionArtifact] {
   let formatted = '';
 
@@ -884,7 +886,9 @@ export function formatCompletedResponse(
   );
 
   return [
-    appendCodeSessionFileSummary(outputWithDeliveryWarning, response.files),
+    filePersistence === 'execution'
+      ? appendExecutionArtifactFileSummary(outputWithDeliveryWarning, response.files)
+      : appendCodeSessionFileSummary(outputWithDeliveryWarning, response.files),
     {
       session_id: response.session_id,
       files: response.files,

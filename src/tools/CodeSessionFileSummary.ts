@@ -78,3 +78,20 @@ export function appendCodeSessionFileSummary(
 
   return `${output.trimEnd()}\n\n${summary}`.trim();
 }
+
+/** Attached-worker artifacts are delivered out of execution-private scratch,
+ * not retained in the selected project or a reusable `/mnt/data` session. */
+export function appendExecutionArtifactFileSummary(
+  output: string,
+  files: t.FileRefs | undefined
+): string {
+  const generatedFiles = files?.filter(isGeneratedFile) ?? [];
+  if (generatedFiles.length === 0) return output.trim();
+  const imageCount = generatedFiles.filter(isImageFile).length;
+  const summary =
+    'Generated files:\n' +
+    `Execution artifacts: ${generatedFiles.length} file(s), including ${imageCount} image(s), were delivered to the app. ` +
+    'They are not retained in the attached project; write durable files to the project root when later commands must reuse them. ' +
+    'The app displays files/images automatically; do not invent download links or wrap generated images in Markdown.';
+  return `${output.trimEnd()}\n\n${summary}`.trim();
+}

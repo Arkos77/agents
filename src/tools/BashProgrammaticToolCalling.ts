@@ -5,12 +5,12 @@ import type { ProgrammaticToolCallingJsonSchema } from './ptcTimeout';
 import type * as t from '@/types';
 import {
   BASH_SHELL_GUIDANCE,
-  CODE_ARTIFACT_PATH_GUIDANCE,
   appendFailedExecutionFileReminder,
   buildCodeApiExecutionErrorMessage,
   buildCodeApiEndpoint,
   CodeApiRequestError,
   getCodeBaseURL,
+  resolveCodeApiAuthHeaders,
   selectRuntimeSessionHint,
 } from './CodeExecutor';
 import {
@@ -44,6 +44,11 @@ config();
 const DEFAULT_MAX_ROUND_TRIPS = 20;
 const DEFAULT_RUN_TIMEOUT_MS = resolveCodeApiRunTimeoutMs();
 const BASH_LAST_BACKGROUND_PID_GUARD = ': &\nwait "$!"';
+const CODE_API_WORKSPACE_HEADER = 'X-LibreChat-Code-Workspace-ID';
+const BASH_DATA_DIRECTORY = '"${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}"';
+const BASH_ARTIFACT_PATH_GUIDANCE =
+  `Use ${BASH_DATA_DIRECTORY} for injected files and generated artifacts. ` +
+  'The directory is execution-scoped; the selected workspace is the persistent project root.';
 
 /** Bash reserved words that get `_tool` suffix when used as function names */
 const BASH_RESERVED = new Set([
@@ -81,14 +86,19 @@ Each call is a fresh bash shell. Variables and state do NOT persist between call
 You MUST complete your entire workflow in ONE code block.
 DO NOT split work across multiple calls expecting to reuse variables.`;
 
+const ATTACHED_WORKSPACE_WARNING = `ATTACHED WORKSPACE EXECUTION:
+- Commands start in the selected persistent workspace; project file changes persist between calls.
+- Each sandbox run is a fresh process, so shell variables, background processes, and temporary execution data do not persist.
+- Injected files and generated artifacts use \${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}; do not copy them into the project unless the task requires it.`;
+
 const CORE_RULES = `Rules:
 - One call: state does not persist
 - Tools are pre-defined as bash functions—DO NOT redefine them
 - Each tool function accepts a JSON string argument
-- Save tool output with raw=$(tool '{}'); printf '%s\n' "$raw" > /mnt/data/file.json; direct tool > file may be empty
+- Set data_dir=${BASH_DATA_DIRECTORY}; save tool output with raw=$(tool '{}'); printf '%s\n' "$raw" > "$data_dir/file.json"; direct tool > file may be empty
 - Tool stdout is normalized to one compact JSON value when possible; parse saved stdout once, then use fromjson? // . only for JSON-string fields
 - Only echo/printf output returns to the model
-- ${CODE_ARTIFACT_PATH_GUIDANCE}
+- ${BASH_ARTIFACT_PATH_GUIDANCE}
 - ${BASH_SHELL_GUIDANCE}
 - timeout caps one sandbox run/replay iteration, not the total multi-round-trip workflow`;
 
@@ -101,11 +111,12 @@ const EXAMPLES = `Example (Complete workflow in one call):
   echo "$data" | jq '.[] | .name'
 
 Example (Parallel calls):
-  { sf=$(web_search '{"query": "SF weather"}'); printf '%s\n' "$sf" > /mnt/data/sf.json; } &
-  { ny=$(web_search '{"query": "NY weather"}'); printf '%s\n' "$ny" > /mnt/data/ny.json; } &
+  data_dir=${BASH_DATA_DIRECTORY}
+  { sf=$(web_search '{"query": "SF weather"}'); printf '%s\n' "$sf" > "$data_dir/sf.json"; } &
+  { ny=$(web_search '{"query": "NY weather"}'); printf '%s\n' "$ny" > "$data_dir/ny.json"; } &
   wait
-  echo "SF: $(jq -r . /mnt/data/sf.json)"
-  echo "NY: $(jq -r . /mnt/data/ny.json)"`;
+  echo "SF: $(jq -r . "$data_dir/sf.json")"
+  echo "NY: $(jq -r . "$data_dir/ny.json")"`;
 
 const CODE_PARAM_DESCRIPTION = `Bash code that calls tools programmatically. Tools are available as bash functions.
 
@@ -326,7 +337,32 @@ export function createBashProgrammaticToolCallingTool(
   const maxRunTimeoutMs = resolveCodeApiRunTimeoutMs(initParams.runTimeoutMs);
   const proxy = initParams.proxy ?? process.env.PROXY;
   const debug = initParams.debug ?? process.env.BASH_PTC_DEBUG === 'true';
+  const workspaceId = initParams.workspaceId?.trim();
+  const hasWorkspace = workspaceId != null && workspaceId !== '';
+  if (
+    hasWorkspace &&
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workspaceId)
+  ) {
+    throw new Error('Invalid attached workspace identifier');
+  }
+  const requestAuthHeaders: t.CodeApiAuthHeaders = hasWorkspace
+    ? async (): Promise<t.CodeApiAuthHeaderMap> => ({
+      ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
+      [CODE_API_WORKSPACE_HEADER]: workspaceId,
+    })
+    : (initParams.authHeaders ?? {});
   const EXEC_ENDPOINT = buildCodeApiEndpoint(baseUrl, 'exec/programmatic');
+  const description = hasWorkspace
+    ? BashProgrammaticToolCallingDescription.replace(
+      STATELESS_WARNING,
+      ATTACHED_WORKSPACE_WARNING
+    )
+    : BashProgrammaticToolCallingDescription;
+  const schema = createBashProgrammaticToolCallingSchema(maxRunTimeoutMs);
+  if (hasWorkspace) {
+    schema.properties.code.description =
+      CODE_PARAM_DESCRIPTION.replace(STATELESS_WARNING, ATTACHED_WORKSPACE_WARNING);
+  }
 
   return tool(
     async (rawParams, config) => {
@@ -449,7 +485,7 @@ export function createBashProgrammaticToolCallingTool(
 
         /* Raw `code`, not `preparedCode`: the `$!` guard exists for the
          * programmatic replay wrapper, which plain `/exec` never applies. */
-        if (needsNoTools) {
+        if (needsNoTools && !hasWorkspace) {
           return await runPlainExecution({
             baseUrl,
             lang: 'bash',
@@ -459,7 +495,7 @@ export function createBashProgrammaticToolCallingTool(
             files,
             runtimeSessionHint,
             proxy,
-            authHeaders: initParams.authHeaders,
+            authHeaders: requestAuthHeaders,
             executionProfile: initParams.executionProfile,
           });
         }
@@ -478,7 +514,7 @@ export function createBashProgrammaticToolCallingTool(
               : {}),
           },
           proxy,
-          initParams.authHeaders,
+          requestAuthHeaders,
           initParams.executionProfile
         );
 
@@ -519,7 +555,7 @@ export function createBashProgrammaticToolCallingTool(
               tool_results: toolResults,
             },
             proxy,
-            initParams.authHeaders,
+            requestAuthHeaders,
             initParams.executionProfile
           );
         }
@@ -529,7 +565,11 @@ export function createBashProgrammaticToolCallingTool(
         // ====================================================================
 
         if (response.status === 'completed') {
-          return formatCompletedResponse(response, code);
+          return formatCompletedResponse(
+            response,
+            code,
+            hasWorkspace ? 'execution' : 'session'
+          );
         }
 
         if (response.status === 'error') {
@@ -551,8 +591,8 @@ export function createBashProgrammaticToolCallingTool(
     },
     {
       name: Constants.BASH_PROGRAMMATIC_TOOL_CALLING,
-      description: BashProgrammaticToolCallingDescription,
-      schema: createBashProgrammaticToolCallingSchema(maxRunTimeoutMs),
+      description,
+      schema,
       responseFormat: Constants.CONTENT_AND_ARTIFACT,
     }
   );

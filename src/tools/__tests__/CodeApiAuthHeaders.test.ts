@@ -437,6 +437,66 @@ describe('CodeAPI auth header injection', () => {
     ).not.toHaveProperty('authHeaders');
   });
 
+  it('executes injected skill files inside a selected attached workspace', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        session_id: 'session_123',
+        stdout: 'skill output\n',
+        files: [
+          {
+            id: 'artifact-1',
+            name: 'report.txt',
+            storage_session_id: 'session_123',
+          },
+        ],
+      })
+    );
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: { Authorization: 'Bearer worker-token' },
+      workspaceId: 'project:a',
+    });
+
+    const output = await tool.invoke(
+      { command: 'node "$LIBRECHAT_CODE_DATA_DIR/skills/report/run.js"' },
+      {
+        toolCall: {
+          _injected_files: [
+            {
+              id: 'file-1',
+              resource_id: 'skill-1',
+              storage_session_id: 'storage-1',
+              name: 'skills/report/run.js',
+              kind: 'skill',
+              version: 1,
+            },
+          ],
+        },
+      } as unknown as RunnableConfig
+    );
+
+    expect(output).toContain('Execution artifacts: 1 file(s)');
+    expect(output).not.toContain('persisted file(s) are available in /mnt/data');
+    expect(tool.description).toContain('selected persistent project');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://code.example.com/v1/exec/programmatic'
+    );
+    expect(requestHeadersAt(0)).toEqual(
+      expect.objectContaining({
+        Authorization: 'Bearer worker-token',
+        'X-LibreChat-Code-Workspace-ID': 'project:a',
+      })
+    );
+    expect(requestBodyAt(0)).toEqual(
+      expect.objectContaining({
+        lang: 'bash',
+        tools: [],
+        files: [expect.objectContaining({ name: 'skills/report/run.js' })],
+      })
+    );
+  });
+
   it('routes bash tools by trusted per-agent profile', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ session_id: 'session_123', stdout: '1\n' })
@@ -1148,7 +1208,20 @@ describe('CodeAPI auth header injection', () => {
           tool_calls: [{ id: 'call_1', name: 'lookup_user', input: {} }],
         })
       )
-      .mockResolvedValueOnce(completedResponse('done'));
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'completed',
+          session_id: 'session_123',
+          stdout: 'done',
+          files: [
+            {
+              id: 'artifact-1',
+              name: 'result.txt',
+              storage_session_id: 'session_123',
+            },
+          ],
+        })
+      );
 
     const tool = createProgrammaticToolCallingTool({
       authHeaders: () => ({ Authorization: 'Bearer ptc-token' }),
@@ -1181,6 +1254,77 @@ describe('CodeAPI auth header injection', () => {
     }
     expect(requestBodyAt(0).runtime_session_hint).toBe('user-123');
     expect(requestBodyAt(1)).not.toHaveProperty('runtime_session_hint');
+  });
+
+  it('binds bash programmatic initial and continuation requests to the selected workspace', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'tool_call_required',
+          continuation_token: 'continue_workspace',
+          tool_calls: [{ id: 'call_1', name: 'lookup_user', input: {} }],
+        })
+      )
+      .mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashProgrammaticToolCallingTool({
+      baseUrl: 'https://code.example.com',
+      workspaceId: 'project-a',
+      authHeaders: { Authorization: 'Bearer workspace-token' },
+    });
+
+    expect(tool.description).toContain('selected persistent workspace');
+    expect(tool.description).not.toContain('CRITICAL - STATELESS EXECUTION');
+    expect(
+      (tool.schema as { properties: { code: { description: string } } })
+        .properties.code.description
+    ).toContain('selected persistent workspace');
+
+    await tool.invoke(
+      { code: 'lookup_user "{}"' },
+      {
+        toolCall: {
+          name: 'bash_programmatic_code_execution',
+          args: {},
+          toolMap: toolMap(),
+          toolDefs,
+        },
+      }
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 2; i++) {
+      expect(requestHeadersAt(i)).toMatchObject({
+        Authorization: 'Bearer workspace-token',
+        'X-LibreChat-Code-Workspace-ID': 'project-a',
+      });
+    }
+  });
+
+  it('keeps tool-free attached bash execution on the programmatic workspace path', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashProgrammaticToolCallingTool({
+      baseUrl: 'https://code.example.com',
+      workspaceId: 'project-a',
+    });
+
+    await tool.invoke(
+      { code: 'pwd', tool_manifest: [] },
+      {
+        toolCall: {
+          name: 'bash_programmatic_code_execution',
+          args: {},
+          toolMap: new Map(),
+          toolDefs: [],
+        },
+      }
+    );
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://code.example.com/exec/programmatic'
+    );
+    expect(requestHeadersAt(0)).toMatchObject({
+      'X-LibreChat-Code-Workspace-ID': 'project-a',
+    });
   });
 
   it('keeps explicit default PTC stateless despite a graph-wide hint', async () => {
