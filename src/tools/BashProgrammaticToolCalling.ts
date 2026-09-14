@@ -371,18 +371,18 @@ export function createBashProgrammaticToolCallingTool(
   }
   const requestAuthHeaders: t.CodeApiAuthHeaders = hasWorkspace
     ? async (): Promise<t.CodeApiAuthHeaderMap> => ({
-        ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
-        [CODE_API_WORKSPACE_HEADER]: workspaceId,
-      })
+      ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
+      [CODE_API_WORKSPACE_HEADER]: workspaceId,
+    })
     : (initParams.authHeaders ?? {});
   const EXEC_ENDPOINT = buildCodeApiEndpoint(baseUrl, 'exec/programmatic');
   const description = hasWorkspace
     ? BashProgrammaticToolCallingDescription.replace(
-        STATELESS_WARNING,
-        ATTACHED_WORKSPACE_WARNING
-      )
-        .replace(CORE_RULES, ATTACHED_CORE_RULES)
-        .replace(EXAMPLES, ATTACHED_EXAMPLES)
+      STATELESS_WARNING,
+      ATTACHED_WORKSPACE_WARNING
+    )
+      .replace(CORE_RULES, ATTACHED_CORE_RULES)
+      .replace(EXAMPLES, ATTACHED_EXAMPLES)
     : BashProgrammaticToolCallingDescription;
   const schema = createBashProgrammaticToolCallingSchema(maxRunTimeoutMs);
   if (hasWorkspace) {

@@ -1704,7 +1704,7 @@ describe('CodeAPI auth header injection', () => {
         {
           code: [
             'lookup_user "{}" > /mnt/data/user.json',
-            "jq -r '.result.name' /mnt/data/user.json",
+            'jq -r \'.result.name\' /mnt/data/user.json',
           ].join('\n'),
         },
         {

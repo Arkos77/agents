@@ -150,7 +150,7 @@ export function buildBashExecutionToolDescription(options?: {
 }
 
 const STATELESS_BASH_PARAM_NOTE =
-  "The environment is stateless; variables and state don't persist between executions.";
+  'The environment is stateless; variables and state don\'t persist between executions.';
 const STATEFUL_BASH_PARAM_NOTE =
   'Files written to /mnt/data persist between calls on the same warm machine. Each call runs in a fresh sandbox: shell variables, cwd, /tmp, and background processes do NOT survive the call. Only /mnt/data is durable.';
 const ATTACHED_BASH_PARAM_NOTE =
@@ -360,36 +360,36 @@ function createBashExecutionTool(
         const runtimeEcho =
           result.runtime_session_id != null
             ? {
-                runtime_session_id: result.runtime_session_id,
-                runtime_status: result.runtime_status,
-              }
+              runtime_session_id: result.runtime_session_id,
+              runtime_status: result.runtime_status,
+            }
             : {};
         return [
           hasWorkspace
             ? appendExecutionArtifactFileSummary(
-                outputWithDeliveryWarning,
-                result.files
-              )
+              outputWithDeliveryWarning,
+              result.files
+            )
             : appendCodeSessionFileSummary(
-                outputWithDeliveryWarning,
-                result.files
-              ),
+              outputWithDeliveryWarning,
+              result.files
+            ),
           (hasFiles
             ? {
-                session_id: result.session_id,
-                files: result.files,
-                ...(artifactDelivery != null
-                  ? { artifact_delivery: artifactDelivery }
-                  : {}),
-                ...runtimeEcho,
-              }
+              session_id: result.session_id,
+              files: result.files,
+              ...(artifactDelivery != null
+                ? { artifact_delivery: artifactDelivery }
+                : {}),
+              ...runtimeEcho,
+            }
             : {
-                session_id: result.session_id,
-                ...(artifactDelivery != null
-                  ? { artifact_delivery: artifactDelivery }
-                  : {}),
-                ...runtimeEcho,
-              }) satisfies t.CodeExecutionArtifact,
+              session_id: result.session_id,
+              ...(artifactDelivery != null
+                ? { artifact_delivery: artifactDelivery }
+                : {}),
+              ...runtimeEcho,
+            }) satisfies t.CodeExecutionArtifact,
         ];
       } catch (error) {
         const messageWithReminder = appendFailedExecutionFileReminder(
