@@ -626,6 +626,98 @@ describe('ToolNode code execution session management', () => {
       expect(chartFile!.storage_session_id).toBe('new-sess');
     });
 
+    it('removes only files explicitly deleted by Code API', () => {
+      const sessions: t.ToolSessionMap = new Map();
+      sessions.set(Constants.EXECUTE_CODE, {
+        session_id: 'old-sess',
+        files: [
+          { id: 'f1', name: 'data.csv', storage_session_id: 'old-sess' },
+          { id: 'f2', name: 'chart.png', storage_session_id: 'old-sess' },
+        ],
+        lastUpdated: Date.now(),
+      } satisfies t.CodeSessionContext);
+      const toolNode = new ToolNode({
+        tools: [createMockCodeTool({ capturedConfigs: [] })],
+        sessions,
+        eventDrivenMode: true,
+      });
+      const storeMethod = (
+        toolNode as unknown as {
+          storeCodeSessionFromResults: (
+            results: t.ToolExecuteResult[],
+            requestMap: Map<string, t.ToolCallRequest>
+          ) => void;
+        }
+      ).storeCodeSessionFromResults.bind(toolNode);
+
+      storeMethod(
+        [{
+          toolCallId: 'tc-delete',
+          content: 'removed data.csv',
+          artifact: {
+            session_id: 'new-sess',
+            files: [],
+            deleted_files: ['data.csv'],
+          },
+          status: 'success',
+        }],
+        new Map([
+          ['tc-delete', { id: 'tc-delete', name: Constants.EXECUTE_CODE, args: {} }],
+        ])
+      );
+
+      const stored = sessions.get(Constants.EXECUTE_CODE) as t.CodeSessionContext;
+      expect(stored.session_id).toBe('new-sess');
+      expect(stored.files).toEqual([
+        { id: 'f2', name: 'chart.png', storage_session_id: 'old-sess' },
+      ]);
+    });
+
+    it('lets a newly persisted file win when the same path is also reported deleted', () => {
+      const sessions: t.ToolSessionMap = new Map();
+      sessions.set(Constants.EXECUTE_CODE, {
+        session_id: 'old-sess',
+        files: [
+          { id: 'old-file', name: 'data.csv', storage_session_id: 'old-sess' },
+        ],
+        lastUpdated: Date.now(),
+      } satisfies t.CodeSessionContext);
+      const toolNode = new ToolNode({
+        tools: [createMockCodeTool({ capturedConfigs: [] })],
+        sessions,
+        eventDrivenMode: true,
+      });
+      const storeMethod = (
+        toolNode as unknown as {
+          storeCodeSessionFromResults: (
+            results: t.ToolExecuteResult[],
+            requestMap: Map<string, t.ToolCallRequest>
+          ) => void;
+        }
+      ).storeCodeSessionFromResults.bind(toolNode);
+
+      storeMethod(
+        [{
+          toolCallId: 'tc-replace',
+          content: 'replaced data.csv',
+          artifact: {
+            session_id: 'new-sess',
+            files: [{ id: 'new-file', name: 'data.csv' }],
+            deleted_files: ['data.csv'],
+          },
+          status: 'success',
+        }],
+        new Map([
+          ['tc-replace', { id: 'tc-replace', name: Constants.EXECUTE_CODE, args: {} }],
+        ])
+      );
+
+      const stored = sessions.get(Constants.EXECUTE_CODE) as t.CodeSessionContext;
+      expect(stored.files).toEqual([
+        { id: 'new-file', name: 'data.csv', storage_session_id: 'new-sess' },
+      ]);
+    });
+
     it('preserves prior kind/resource_id/version when worker echoes inherited file (skill 403 regression)', () => {
       /**
        * Regression for the codeapi `session_key_mismatch` 403 that

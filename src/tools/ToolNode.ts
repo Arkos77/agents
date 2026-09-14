@@ -662,18 +662,24 @@ function updateCodeSession(
   sessions: t.ToolSessionMap,
   sessionKey: string,
   execSessionId: string,
-  files: t.FileRefs | undefined
+  files: t.FileRefs | undefined,
+  deletedFiles: readonly string[] | undefined
 ): void {
   const newFiles = files ?? [];
+  const deletedFileNames = new Set(deletedFiles ?? []);
   const existingSession = sessions.get(sessionKey) as
     | t.CodeSessionContext
     | undefined;
   const existingFiles = existingSession?.files ?? [];
 
+  /* Absence from `files` is not a deletion signal: older Code API versions
+   * and truncated responses can omit otherwise-live refs. Remove only paths
+   * explicitly attested by `deleted_files`, while allowing a newly persisted
+   * ref at the same path to replace the old one below. */
   if (newFiles.length === 0) {
     sessions.set(sessionKey, {
       session_id: execSessionId,
-      files: existingFiles,
+      files: existingFiles.filter((file) => !deletedFileNames.has(file.name)),
       lastUpdated: Date.now(),
     });
     return;
@@ -704,7 +710,7 @@ function updateCodeSession(
     if (idx !== undefined) {
       filesWithSession[idx] = { ...e, ...filesWithSession[idx] };
     }
-    if (!newFileNames.has(e.name)) {
+    if (!newFileNames.has(e.name) && !deletedFileNames.has(e.name)) {
       filteredExisting.push(e);
     }
   }
@@ -3131,7 +3137,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         this.sessions,
         this.codeSessionKey,
         execSessionId,
-        artifact?.files
+        artifact?.files,
+        artifact?.deleted_files
       );
     }
   }
@@ -3245,7 +3252,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             this.sessions,
             this.codeSessionKey,
             execSessionId,
-            artifact?.files
+            artifact?.files,
+            artifact?.deleted_files
           );
         }
       }

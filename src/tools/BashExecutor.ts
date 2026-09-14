@@ -395,6 +395,10 @@ function createBashExecutionTool(
           artifactDelivery
         );
         const hasFiles = result.files != null && result.files.length > 0;
+        const deletionEcho =
+          result.deleted_files != null
+            ? { deleted_files: result.deleted_files }
+            : {};
         const runtimeEcho =
           result.runtime_session_id != null
             ? {
@@ -419,6 +423,7 @@ function createBashExecutionTool(
               ...(artifactDelivery != null
                 ? { artifact_delivery: artifactDelivery }
                 : {}),
+              ...deletionEcho,
               ...runtimeEcho,
             }
             : {
@@ -426,6 +431,7 @@ function createBashExecutionTool(
               ...(artifactDelivery != null
                 ? { artifact_delivery: artifactDelivery }
                 : {}),
+              ...deletionEcho,
               ...runtimeEcho,
             }) satisfies t.CodeExecutionArtifact,
         ];
