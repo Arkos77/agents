@@ -677,6 +677,16 @@ function codeSessionIdentityByName(
   );
 }
 
+function storageSessionIdFromIdentity(
+  identity: string | undefined,
+  fileId: string
+): string | undefined {
+  const suffix = `\0${fileId}`;
+  return identity != null && identity.endsWith(suffix)
+    ? identity.slice(0, identity.length - suffix.length)
+    : undefined;
+}
+
 function updateCodeSession(
   sessions: t.ToolSessionMap,
   sessionKey: string,
@@ -730,13 +740,16 @@ function updateCodeSession(
     existingFiles.map((file) => fileIdentityKey(file, existingSessionId))
   );
   for (const file of newFiles) {
+    const baselineIdentity = baselineIdentityByName?.get(file.name);
     const withSession = {
       ...file,
-      storage_session_id: file.storage_session_id ?? execSessionId,
+      storage_session_id:
+        file.storage_session_id ??
+        storageSessionIdFromIdentity(baselineIdentity, file.id) ??
+        execSessionId,
     };
     const identity = fileIdentityKey(withSession);
-    const wasTrackedByRequest =
-      baselineIdentityByName?.get(file.name) === identity;
+    const wasTrackedByRequest = baselineIdentity === identity;
     /* An inherited echo is evidence that a request observed an existing ref,
      * not authority to resurrect one removed by a concurrent sibling. Fresh
      * and modified outputs remain eligible to replace by path below. */

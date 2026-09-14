@@ -301,6 +301,61 @@ describe('ToolNode code execution session management', () => {
       ]);
     });
 
+    it('does not revive a deleted baseline ref from a legacy inherited echo', () => {
+      const sessions: t.ToolSessionMap = new Map([
+        [
+          Constants.EXECUTE_CODE,
+          { session_id: 'current-session', files: [], lastUpdated: Date.now() },
+        ],
+      ]);
+      const toolNode = new ToolNode({
+        tools: [createMockCodeTool({ capturedConfigs: [] })],
+        sessions,
+        eventDrivenMode: true,
+      });
+      const storeMethod = (
+        toolNode as unknown as {
+          storeCodeSessionFromResults: (
+            results: t.ToolExecuteResult[],
+            requestMap: Map<string, t.ToolCallRequest>,
+            baselineByRequestId: ReadonlyMap<
+              string,
+              ReadonlyMap<string, string>
+            >
+          ) => void;
+        }
+      ).storeCodeSessionFromResults.bind(toolNode);
+
+      storeMethod(
+        [
+          {
+            toolCallId: 'tc-legacy-echo',
+            content: 'unchanged',
+            artifact: {
+              session_id: 'execution-session',
+              files: [{ id: 'old-file', name: 'data.csv', inherited: true }],
+            },
+            status: 'success',
+          },
+        ],
+        new Map([
+          [
+            'tc-legacy-echo',
+            {
+              id: 'tc-legacy-echo',
+              name: Constants.EXECUTE_CODE,
+              args: {},
+            },
+          ],
+        ]),
+        new Map([
+          ['tc-legacy-echo', new Map([['data.csv', 'old-session\0old-file']])],
+        ])
+      );
+
+      expect(sessions.get(Constants.EXECUTE_CODE)?.files).toEqual([]);
+    });
+
     it('reconciles deletions from idless direct calls', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];
       const sessions: t.ToolSessionMap = new Map();
