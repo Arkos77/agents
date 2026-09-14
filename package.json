@@ -1,6 +1,6 @@
 {
   "name": "@librechat/agents",
-  "version": "3.8.6",
+  "version": "3.8.7",
   "reova": {
     "enabled": true,
     "endpoint": "https://telemetry.reo.dev/data"
@@ -159,7 +159,7 @@
   "description": "",
   "repository": {
     "type": "git",
-    "url": "https://github.com/danny-avila/agents"
+    "url": "https://github.com/LibreChat-AI/agents"
   },
   "author": "Danny Avila",
   "license": "MIT",
