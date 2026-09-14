@@ -29,6 +29,7 @@ import { resolveFetchProxyAgent } from '@/utils/proxy';
 import { INTENT_PROPERTY } from '@/tools/intentArg';
 import { Constants } from '@/common';
 import { prepareBashProgrammaticCode } from './BashProgrammaticToolCalling';
+import { makeRequest } from './ProgrammaticToolCalling';
 
 config();
 
@@ -155,6 +156,10 @@ const STATEFUL_BASH_PARAM_NOTE =
   'Files written to /mnt/data persist between calls on the same warm machine. Each call runs in a fresh sandbox: shell variables, cwd, /tmp, and background processes do NOT survive the call. Only /mnt/data is durable.';
 const ATTACHED_BASH_PARAM_NOTE =
   'Commands start in the selected persistent project. Project file changes persist, but shell variables, background processes, and execution-private temporary files do not.';
+const ATTACHED_BASH_ARTIFACT_PATH_GUIDANCE =
+  'Injected files and generated artifacts use `${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}` for this execution only. Write anything needed later into the selected project.';
+const ATTACHED_BASH_TMP_REMINDER =
+  'Note: /tmp files are same-call scratch only and were not persisted; write files needed later into the selected project.';
 
 export function buildBashExecutionToolSchema(opts?: {
   statefulSessions?: boolean;
@@ -166,11 +171,16 @@ export function buildBashExecutionToolSchema(opts?: {
   } else if (opts?.statefulSessions === true) {
     note = STATEFUL_BASH_PARAM_NOTE;
   }
-  const commandDescription =
+  let commandDescription =
     BashExecutionToolSchema.properties.command.description.replace(
       STATELESS_BASH_PARAM_NOTE,
       note
     );
+  if (opts?.attachedWorkspace === true) {
+    commandDescription = commandDescription
+      .replace('- Prior /mnt/data files are available and can be modified in place.\n', '')
+      .replace(CODE_ARTIFACT_PATH_GUIDANCE, ATTACHED_BASH_ARTIFACT_PATH_GUIDANCE);
+  }
   return {
     ...BashExecutionToolSchema,
     properties: {
@@ -184,6 +194,15 @@ export function buildBashExecutionToolSchema(opts?: {
 }
 
 export const BashExecutionToolName = Constants.BASH_TOOL;
+
+function quoteBashArgument(value: string): string {
+  return `'${value.replace(/'/g, '\'"\'"\'')}'`;
+}
+
+function commandWithArguments(command: string, args: string[] | undefined): string {
+  if (args == null || args.length === 0) return command;
+  return `bash -c ${quoteBashArgument(command)} -- ${args.map(quoteBashArgument).join(' ')}`;
+}
 
 /**
  * Default bash tool definition using the base description.
@@ -237,9 +256,10 @@ function createBashExecutionTool(
        * (below), never from the tool call itself. */
       /* `intent` is a UI display label — never part of the wire body. */
       const {
-        command,
+        command: rawCommand,
         intent: _ignoredIntent,
         runtime_session_hint: _ignoredModelHint,
+        args,
         ...rest
       } = rawInput as {
         command: string;
@@ -249,6 +269,9 @@ function createBashExecutionTool(
       };
       void _ignoredModelHint;
       void _ignoredIntent;
+      const command = hasWorkspace
+        ? commandWithArguments(rawCommand, args)
+        : rawCommand;
       const { session_id, _injected_files, _runtime_session_hint } =
         (config.toolCall ?? {}) as {
           session_id?: string;
@@ -260,6 +283,7 @@ function createBashExecutionTool(
         lang: 'bash',
         code: hasWorkspace ? prepareBashProgrammaticCode(command) : command,
         ...(hasWorkspace ? { tools: [] } : {}),
+        ...(!hasWorkspace && args != null ? { args } : {}),
         ...rest,
         ...executionParams,
       };
@@ -298,38 +322,49 @@ function createBashExecutionTool(
       try {
         const resolvedAuthHeaders =
           await resolveCodeApiAuthHeaders(authHeaders);
-        const fetchOptions: RequestInit = {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'LibreChat/1.0',
-            ...addCodeApiExecutionProfileHeader(
-              resolvedAuthHeaders,
-              executionProfile
-            ),
-            ...(hasWorkspace
-              ? { 'X-LibreChat-Code-Workspace-ID': workspaceId }
-              : {}),
-          },
-          body: JSON.stringify(postData),
-          signal: config.signal,
-        };
-
-        const proxyAgent = resolveFetchProxyAgent(execEndpoint);
-        if (proxyAgent != null) {
-          fetchOptions.agent = proxyAgent;
-        }
-        const response = await fetch(execEndpoint, fetchOptions);
-        if (!response.ok) {
-          throw new CodeApiRequestError(
-            await buildCodeApiHttpErrorMessage('POST', execEndpoint, response, {
-              profile: executionProfile,
-            })
+        let result: Partial<t.ExecuteResult> & t.ProgrammaticExecutionResponse;
+        if (hasWorkspace) {
+          result = await makeRequest(
+            execEndpoint,
+            postData,
+            undefined,
+            {
+              ...resolvedAuthHeaders,
+              'X-LibreChat-Code-Workspace-ID': workspaceId,
+            },
+            executionProfile,
+            config.signal
           );
-        }
+        } else {
+          const fetchOptions: RequestInit = {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'LibreChat/1.0',
+              ...addCodeApiExecutionProfileHeader(
+                resolvedAuthHeaders,
+                executionProfile
+              ),
+            },
+            body: JSON.stringify(postData),
+            signal: config.signal,
+          };
 
-        const result = (await response.json()) as t.ExecuteResult &
-          Partial<t.ProgrammaticExecutionResponse>;
+          const proxyAgent = resolveFetchProxyAgent(execEndpoint);
+          if (proxyAgent != null) {
+            fetchOptions.agent = proxyAgent;
+          }
+          const response = await fetch(execEndpoint, fetchOptions);
+          if (!response.ok) {
+            throw new CodeApiRequestError(
+              await buildCodeApiHttpErrorMessage('POST', execEndpoint, response, {
+                profile: executionProfile,
+              })
+            );
+          }
+          result = (await response.json()) as Partial<t.ExecuteResult> &
+            t.ProgrammaticExecutionResponse;
+        }
         if (hasWorkspace && result.status !== 'completed') {
           throw new CodeApiRequestError(
             buildCodeApiExecutionErrorMessage(
@@ -338,16 +373,19 @@ function createBashExecutionTool(
           );
         }
         let formattedOutput = '';
-        if (result.stdout) {
+        if (typeof result.stdout === 'string' && result.stdout.length > 0) {
           formattedOutput += `stdout:\n${result.stdout}\n`;
         } else {
           formattedOutput += emptyOutputMessage;
         }
-        if (result.stderr) formattedOutput += `stderr:\n${result.stderr}\n`;
+        if (typeof result.stderr === 'string' && result.stderr.length > 0) {
+          formattedOutput += `stderr:\n${result.stderr}\n`;
+        }
 
         const outputWithReminder = appendTmpScratchReminder(
           formattedOutput,
-          command
+          command,
+          hasWorkspace ? ATTACHED_BASH_TMP_REMINDER : undefined
         );
         const artifactDelivery = normalizeArtifactDeliveryFailure(
           result.artifact_delivery

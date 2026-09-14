@@ -568,6 +568,66 @@ describe('CodeAPI auth header injection', () => {
     );
   });
 
+  it('preserves args and sends explicit cancellation for selected-workspace Bash', async () => {
+    const controller = new AbortController();
+    fetchMock
+      .mockImplementationOnce((_url, rawInit) => {
+        const init = rawInit as RequestInit;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true }
+          );
+        });
+      })
+      .mockResolvedValueOnce(jsonResponse({ status: 'cancellation_requested' }));
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: { Authorization: 'Bearer worker-token' },
+      executionProfile: 'stateful',
+      workspaceId: 'project:a',
+    });
+
+    const request = tool
+      .invoke(
+        { command: 'printf "%s" "$1"', args: ['value with spaces'] },
+        { signal: controller.signal } as unknown as RunnableConfig
+      )
+      .catch((error: unknown) => error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const requestId = requestHeadersAt(0)['X-LibreChat-Code-Request-ID'];
+    expect(String(requestBodyAt(0).code)).toContain(
+      'bash -c \'printf "%s" "$1"\' -- \'value with spaces\''
+    );
+    expect(requestBodyAt(0)).not.toHaveProperty('args');
+    controller.abort();
+    await request;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://code.example.com/v1/exec/programmatic/cancel'
+    );
+    expect(requestHeadersAt(1)).toMatchObject({
+      Authorization: 'Bearer worker-token',
+      'X-CodeAPI-Expected-Profile': 'stateful',
+    });
+    expect(requestBodyAt(1)).toEqual({ request_id: requestId });
+  });
+
+  it('points attached /tmp reminders at the selected project', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      workspaceId: 'project:a',
+    });
+
+    const output = await tool.invoke({ command: 'touch /tmp/transient' });
+
+    expect(output).toContain('write files needed later into the selected project');
+    expect(output).not.toContain('use /mnt/data for files needed later');
+  });
+
   it('routes bash tools by trusted per-agent profile', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ session_id: 'session_123', stdout: '1\n' })

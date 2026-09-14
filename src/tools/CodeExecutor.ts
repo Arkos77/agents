@@ -58,11 +58,15 @@ export const TMP_SCRATCH_OUTPUT_REMINDER =
 export const FAILED_EXECUTION_FILE_REMINDER =
   'Note: any files written during this failed call were not registered for later calls; fix the error and rerun before relying on them.';
 
-export function appendTmpScratchReminder(output: string, code: string): string {
+export function appendTmpScratchReminder(
+  output: string,
+  code: string,
+  reminder = TMP_SCRATCH_OUTPUT_REMINDER
+): string {
   if (!TMP_PATH_PATTERN.test(code)) {
     return output;
   }
-  return `${output.trimEnd()}\n${TMP_SCRATCH_OUTPUT_REMINDER}\n`;
+  return `${output.trimEnd()}\n${reminder}\n`;
 }
 
 export function appendFailedExecutionFileReminder(

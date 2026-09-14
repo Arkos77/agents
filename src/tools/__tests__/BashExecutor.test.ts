@@ -105,4 +105,16 @@ describe('buildBashExecutionToolDescription', () => {
       expect(composed).toContain(BashToolOutputReferencesGuide);
     });
   });
+
+  it('removes /mnt/data persistence claims from attached workspace parameters', async () => {
+    const { buildBashExecutionToolSchema } = await import('../BashExecutor');
+    const description = buildBashExecutionToolSchema({
+      attachedWorkspace: true,
+    }).properties.command.description;
+
+    expect(description).toContain('selected persistent project');
+    expect(description).toContain('Write anything needed later into the selected project');
+    expect(description).not.toContain('Prior /mnt/data files');
+    expect(description).not.toContain('Anything a later call needs');
+  });
 });
