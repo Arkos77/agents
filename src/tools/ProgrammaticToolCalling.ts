@@ -1,5 +1,6 @@
 // src/tools/ProgrammaticToolCalling.ts
 import { config } from 'dotenv';
+import { randomUUID } from 'node:crypto';
 import fetch, { RequestInit } from 'node-fetch';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import type { ToolCall } from '@langchain/core/messages/tool';
@@ -21,6 +22,7 @@ import {
   resolveCodeApiAuthHeaders,
   selectRuntimeSessionHint,
 } from './CodeExecutor';
+import { appendExecutionArtifactFileSummary } from './CodeSessionFileSummary';
 import {
   assertUnambiguousIdentifiers,
   projectProgrammaticToolMap,
@@ -51,6 +53,9 @@ config();
 const DEFAULT_MAX_ROUND_TRIPS = 20;
 
 const DEFAULT_RUN_TIMEOUT_MS = resolveCodeApiRunTimeoutMs();
+const CODE_API_PROGRAMMATIC_REQUEST_HEADER =
+  'X-LibreChat-Code-Request-ID';
+const CANCELLATION_REQUEST_TIMEOUT_MS = 2_000;
 
 // ============================================================================
 // Description Components (Single Source of Truth)
@@ -513,10 +518,12 @@ export async function makeRequest(
   body: Record<string, unknown>,
   proxy?: string,
   authHeaders?: t.CodeApiAuthHeaders,
-  executionProfile?: t.CodeApiExecutionProfile
+  executionProfile?: t.CodeApiExecutionProfile,
+  signal?: AbortSignal
 ): Promise<t.ProgrammaticExecutionResponse> {
   try {
     const resolvedAuthHeaders = await resolveCodeApiAuthHeaders(authHeaders);
+    const requestId = signal != null ? randomUUID() : undefined;
     const fetchOptions: RequestInit = {
       method: 'POST',
       headers: {
@@ -526,8 +533,12 @@ export async function makeRequest(
           resolvedAuthHeaders,
           executionProfile
         ),
+        ...(requestId != null
+          ? { [CODE_API_PROGRAMMATIC_REQUEST_HEADER]: requestId }
+          : {}),
       },
       body: JSON.stringify(body),
+      signal: signal as RequestInit['signal'],
     };
 
     const proxyAgent = resolveFetchProxyAgent(endpoint, proxy);
@@ -535,7 +546,59 @@ export async function makeRequest(
       fetchOptions.agent = proxyAgent;
     }
 
-    const response = await fetch(endpoint, fetchOptions);
+    let cancellationRequest: Promise<void> | undefined;
+    const requestCancellation = (): void => {
+      if (requestId == null || cancellationRequest != null) {
+        return;
+      }
+      cancellationRequest = (async (): Promise<void> => {
+        const cancellationController = new AbortController();
+        const timeout = setTimeout(
+          () => cancellationController.abort(),
+          CANCELLATION_REQUEST_TIMEOUT_MS
+        );
+        try {
+          const cancelOptions: RequestInit = {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'LibreChat/1.0',
+              ...addCodeApiExecutionProfileHeader(
+                resolvedAuthHeaders,
+                executionProfile
+              ),
+            },
+            body: JSON.stringify({ request_id: requestId }),
+            signal: cancellationController.signal as RequestInit['signal'],
+          };
+          if (proxyAgent != null) {
+            cancelOptions.agent = proxyAgent;
+          }
+          await fetch(`${endpoint}/cancel`, cancelOptions);
+        } catch {
+          // Cancellation is best effort for older Code API versions and
+          // transient network failures. The original abort remains the public
+          // result while the server-side execution deadline is the fallback.
+        } finally {
+          clearTimeout(timeout);
+        }
+      })();
+    };
+    signal?.addEventListener('abort', requestCancellation, { once: true });
+    if (signal?.aborted === true) requestCancellation();
+
+    let response;
+    try {
+      response = await fetch(endpoint, fetchOptions);
+    } catch (error) {
+      if (signal?.aborted === true) {
+        requestCancellation();
+        await cancellationRequest;
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', requestCancellation);
+    }
 
     if (!response.ok) {
       throw new CodeApiRequestError(
@@ -860,7 +923,8 @@ export async function executeTools(
  */
 export function formatCompletedResponse(
   response: t.ProgrammaticExecutionResponse,
-  sourceCode = ''
+  sourceCode = '',
+  filePersistence: 'session' | 'execution' = 'session'
 ): [string, t.ProgrammaticExecutionArtifact] {
   let formatted = '';
 
@@ -884,7 +948,9 @@ export function formatCompletedResponse(
   );
 
   return [
-    appendCodeSessionFileSummary(outputWithDeliveryWarning, response.files),
+    filePersistence === 'execution'
+      ? appendExecutionArtifactFileSummary(outputWithDeliveryWarning, response.files)
+      : appendCodeSessionFileSummary(outputWithDeliveryWarning, response.files),
     {
       session_id: response.session_id,
       files: response.files,
@@ -1161,7 +1227,8 @@ export function createProgrammaticToolCallingTool(
           },
           proxy,
           initParams.authHeaders,
-          initParams.executionProfile
+          initParams.executionProfile,
+          config.signal
         );
 
         // ====================================================================
@@ -1199,7 +1266,8 @@ export function createProgrammaticToolCallingTool(
             },
             proxy,
             initParams.authHeaders,
-            initParams.executionProfile
+            initParams.executionProfile,
+            config.signal
           );
         }
 

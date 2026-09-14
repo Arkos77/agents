@@ -173,6 +173,54 @@ describe('CodeAPI auth header injection', () => {
     );
   });
 
+  it('sends an authenticated explicit cancellation when a PTC request aborts', async () => {
+    const controller = new AbortController();
+    fetchMock
+      .mockImplementationOnce((_url, rawInit) => {
+        const init = rawInit as RequestInit;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true }
+          );
+        });
+      })
+      .mockResolvedValueOnce(
+        jsonResponse({ status: 'cancellation_requested' })
+      );
+
+    const request = makeRequest(
+      'https://code.example.com/exec/programmatic',
+      { code: 'sleep 30' },
+      undefined,
+      { Authorization: 'Bearer scoped' },
+      'stateful',
+      controller.signal
+    ).catch((error: unknown) => error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort();
+    await request;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const requestHeaders = requestHeadersAt(0);
+    const requestId = requestHeaders['X-LibreChat-Code-Request-ID'];
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://code.example.com/exec/programmatic/cancel'
+    );
+    expect(requestHeadersAt(1)).toEqual(
+      expect.objectContaining({
+        Authorization: 'Bearer scoped',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+      })
+    );
+    expect(requestBodyAt(1)).toEqual({ request_id: requestId });
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).signal).not.toBe(
+      controller.signal
+    );
+  });
+
   it('maps dynamic auth-header failures to the safe authorization error', async () => {
     const authHeaders = jest.fn(async () => {
       throw new Error(
@@ -288,6 +336,7 @@ describe('CodeAPI auth header injection', () => {
   it('surfaces artifact delivery failures from direct code execution', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
+        status: 'completed',
         session_id: 'session_123',
         stdout: 'code completed\n',
         files: [],
@@ -437,6 +486,148 @@ describe('CodeAPI auth header injection', () => {
     ).not.toHaveProperty('authHeaders');
   });
 
+  it('executes injected skill files inside a selected attached workspace', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'completed',
+        session_id: 'session_123',
+        stdout: 'skill output\n',
+        files: [
+          {
+            id: 'artifact-1',
+            name: 'report.txt',
+            storage_session_id: 'session_123',
+          },
+        ],
+      })
+    );
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: { Authorization: 'Bearer worker-token' },
+      workspaceId: 'project:a',
+    });
+
+    const output = await tool.invoke(
+      { command: 'node "$LIBRECHAT_CODE_DATA_DIR/skills/report/run.js"' },
+      {
+        toolCall: {
+          _injected_files: [
+            {
+              id: 'file-1',
+              resource_id: 'skill-1',
+              storage_session_id: 'storage-1',
+              name: 'skills/report/run.js',
+              kind: 'skill',
+              version: 1,
+            },
+          ],
+        },
+      } as unknown as RunnableConfig
+    );
+
+    expect(output).toContain('Execution artifacts: 1 file(s)');
+    expect(output).not.toContain(
+      'persisted file(s) are available in /mnt/data'
+    );
+    expect(tool.description).toContain('selected persistent project');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://code.example.com/v1/exec/programmatic'
+    );
+    expect(requestHeadersAt(0)).toEqual(
+      expect.objectContaining({
+        Authorization: 'Bearer worker-token',
+        'X-LibreChat-Code-Workspace-ID': 'project:a',
+      })
+    );
+    expect(requestBodyAt(0)).toEqual(
+      expect.objectContaining({
+        lang: 'bash',
+        tools: [],
+        files: [expect.objectContaining({ name: 'skills/report/run.js' })],
+      })
+    );
+    expect(String(requestBodyAt(0).code)).toContain(': &\nwait "$!"');
+  });
+
+  it('surfaces a selected-workspace execution error instead of formatting success', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'error',
+        error: 'sandbox command failed',
+        session_id: 'session_123',
+      })
+    );
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      workspaceId: 'project:a',
+    });
+
+    await expect(tool.invoke({ command: 'exit 1' })).rejects.toThrow(
+      'Code execution failed.'
+    );
+  });
+
+  it('preserves args and sends explicit cancellation for selected-workspace Bash', async () => {
+    const controller = new AbortController();
+    fetchMock
+      .mockImplementationOnce((_url, rawInit) => {
+        const init = rawInit as RequestInit;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true }
+          );
+        });
+      })
+      .mockResolvedValueOnce(jsonResponse({ status: 'cancellation_requested' }));
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: { Authorization: 'Bearer worker-token' },
+      executionProfile: 'stateful',
+      workspaceId: 'project:a',
+    });
+
+    const request = tool
+      .invoke(
+        { command: 'printf "%s" "$1"', args: ['value with spaces'] },
+        { signal: controller.signal } as unknown as RunnableConfig
+      )
+      .catch((error: unknown) => error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const requestId = requestHeadersAt(0)['X-LibreChat-Code-Request-ID'];
+    expect(String(requestBodyAt(0).code)).toContain(
+      'bash -c \'printf "%s" "$1"\' -- \'value with spaces\''
+    );
+    expect(requestBodyAt(0)).not.toHaveProperty('args');
+    controller.abort();
+    await request;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://code.example.com/v1/exec/programmatic/cancel'
+    );
+    expect(requestHeadersAt(1)).toMatchObject({
+      Authorization: 'Bearer worker-token',
+      'X-CodeAPI-Expected-Profile': 'stateful',
+    });
+    expect(requestBodyAt(1)).toEqual({ request_id: requestId });
+  });
+
+  it('points attached /tmp reminders at the selected project', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      workspaceId: 'project:a',
+    });
+
+    const output = await tool.invoke({ command: 'touch /tmp/transient' });
+
+    expect(output).toContain('write files needed later into the selected project');
+    expect(output).not.toContain('use /mnt/data for files needed later');
+  });
+
   it('routes bash tools by trusted per-agent profile', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ session_id: 'session_123', stdout: '1\n' })
@@ -529,16 +720,28 @@ describe('CodeAPI auth header injection', () => {
 
   it.each([
     ['Bash', () => createBashExecutionTool().invoke({ command: 'echo 1' })],
-    ['Code', () => createCodeExecutionTool().invoke({ lang: 'py', code: 'print(1)' })],
-    ['Python PTC', () => createProgrammaticToolCallingTool().invoke({ code: 'print(1)' }, {
-      toolCall: { toolMap: toolMap(), toolDefs },
-    } as RunnableConfig)],
-  ] as const)('preserves non-retryable errors through the %s wrapper', async (_name, invoke) => {
-    fetchMock.mockResolvedValueOnce(errorResponse(409, JSON.stringify({ error: 'bridge_worker_mismatch' })));
-    const error = await invoke().catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(CodeApiRequestError);
-    expect(error).toHaveProperty('retryable', false);
-  });
+    [
+      'Code',
+      () => createCodeExecutionTool().invoke({ lang: 'py', code: 'print(1)' }),
+    ],
+    [
+      'Python PTC',
+      () =>
+        createProgrammaticToolCallingTool().invoke({ code: 'print(1)' }, {
+          toolCall: { toolMap: toolMap(), toolDefs },
+        } as RunnableConfig),
+    ],
+  ] as const)(
+    'preserves non-retryable errors through the %s wrapper',
+    async (_name, invoke) => {
+      fetchMock.mockResolvedValueOnce(
+        errorResponse(409, JSON.stringify({ error: 'bridge_worker_mismatch' }))
+      );
+      const error = await invoke().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(CodeApiRequestError);
+      expect(error).toHaveProperty('retryable', false);
+    }
+  );
 
   it('does not tell programmatic Bash to rerun files after a permanent mismatch', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -1148,7 +1351,20 @@ describe('CodeAPI auth header injection', () => {
           tool_calls: [{ id: 'call_1', name: 'lookup_user', input: {} }],
         })
       )
-      .mockResolvedValueOnce(completedResponse('done'));
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'completed',
+          session_id: 'session_123',
+          stdout: 'done',
+          files: [
+            {
+              id: 'artifact-1',
+              name: 'result.txt',
+              storage_session_id: 'session_123',
+            },
+          ],
+        })
+      );
 
     const tool = createProgrammaticToolCallingTool({
       authHeaders: () => ({ Authorization: 'Bearer ptc-token' }),
@@ -1181,6 +1397,77 @@ describe('CodeAPI auth header injection', () => {
     }
     expect(requestBodyAt(0).runtime_session_hint).toBe('user-123');
     expect(requestBodyAt(1)).not.toHaveProperty('runtime_session_hint');
+  });
+
+  it('binds bash programmatic initial and continuation requests to the selected workspace', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: 'tool_call_required',
+          continuation_token: 'continue_workspace',
+          tool_calls: [{ id: 'call_1', name: 'lookup_user', input: {} }],
+        })
+      )
+      .mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashProgrammaticToolCallingTool({
+      baseUrl: 'https://code.example.com',
+      workspaceId: 'project-a',
+      authHeaders: { Authorization: 'Bearer workspace-token' },
+    });
+
+    expect(tool.description).toContain('selected persistent workspace');
+    expect(tool.description).not.toContain('CRITICAL - STATELESS EXECUTION');
+    expect(
+      (tool.schema as { properties: { code: { description: string } } })
+        .properties.code.description
+    ).toContain('selected persistent workspace');
+
+    await tool.invoke(
+      { code: 'lookup_user "{}"' },
+      {
+        toolCall: {
+          name: 'bash_programmatic_code_execution',
+          args: {},
+          toolMap: toolMap(),
+          toolDefs,
+        },
+      }
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 2; i++) {
+      expect(requestHeadersAt(i)).toMatchObject({
+        Authorization: 'Bearer workspace-token',
+        'X-LibreChat-Code-Workspace-ID': 'project-a',
+      });
+    }
+  });
+
+  it('keeps tool-free attached bash execution on the programmatic workspace path', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashProgrammaticToolCallingTool({
+      baseUrl: 'https://code.example.com',
+      workspaceId: 'project-a',
+    });
+
+    await tool.invoke(
+      { code: 'pwd', tool_manifest: [] },
+      {
+        toolCall: {
+          name: 'bash_programmatic_code_execution',
+          args: {},
+          toolMap: new Map(),
+          toolDefs: [],
+        },
+      }
+    );
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://code.example.com/exec/programmatic'
+    );
+    expect(requestHeadersAt(0)).toMatchObject({
+      'X-LibreChat-Code-Workspace-ID': 'project-a',
+    });
   });
 
   it('keeps explicit default PTC stateless despite a graph-wide hint', async () => {

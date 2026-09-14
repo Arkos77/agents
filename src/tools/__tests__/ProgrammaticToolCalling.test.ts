@@ -34,6 +34,10 @@ import {
   selectProgrammaticTools,
 } from '../ProgrammaticCallerPolicy';
 import { Constants } from '@/common';
+import {
+  appendExecutionArtifactFileSummary,
+  stripCodeSessionFileSummary,
+} from '../CodeSessionFileSummary';
 
 describe('ProgrammaticToolCalling', () => {
   describe('tool descriptions', () => {
@@ -65,6 +69,18 @@ describe('ProgrammaticToolCalling', () => {
       expect(description).toContain('`/tmp` never survives the call');
       expect(schema.properties.tool_manifest.uniqueItems).toBe(true);
     });
+  });
+
+  it('strips attached-workspace artifact summaries before output reuse', () => {
+    const output = appendExecutionArtifactFileSummary('done', [
+      {
+        id: 'artifact-1',
+        name: 'report.txt',
+        storage_session_id: 'session-1',
+      },
+    ]);
+
+    expect(stripCodeSessionFileSummary(output)).toBe('done');
   });
 
   describe('normalizeBashToolResultsForReplay', () => {

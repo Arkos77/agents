@@ -11,6 +11,7 @@ import {
   buildCodeApiEndpoint,
   CodeApiRequestError,
   getCodeBaseURL,
+  resolveCodeApiAuthHeaders,
   selectRuntimeSessionHint,
 } from './CodeExecutor';
 import {
@@ -44,6 +45,11 @@ config();
 const DEFAULT_MAX_ROUND_TRIPS = 20;
 const DEFAULT_RUN_TIMEOUT_MS = resolveCodeApiRunTimeoutMs();
 const BASH_LAST_BACKGROUND_PID_GUARD = ': &\nwait "$!"';
+const CODE_API_WORKSPACE_HEADER = 'X-LibreChat-Code-Workspace-ID';
+const ATTACHED_BASH_DATA_DIRECTORY = '"${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}"';
+const ATTACHED_BASH_ARTIFACT_PATH_GUIDANCE =
+  `Use ${ATTACHED_BASH_DATA_DIRECTORY} for injected files and generated artifacts. ` +
+  'The directory is execution-scoped; the selected workspace is the persistent project root.';
 
 /** Bash reserved words that get `_tool` suffix when used as function names */
 const BASH_RESERVED = new Set([
@@ -81,6 +87,11 @@ Each call is a fresh bash shell. Variables and state do NOT persist between call
 You MUST complete your entire workflow in ONE code block.
 DO NOT split work across multiple calls expecting to reuse variables.`;
 
+const ATTACHED_WORKSPACE_WARNING = `ATTACHED WORKSPACE EXECUTION:
+- Commands start in the selected persistent workspace; project file changes persist between calls.
+- Each sandbox run is a fresh process, so shell variables, background processes, and temporary execution data do not persist.
+- Injected files and generated artifacts use \${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}; do not copy them into the project unless the task requires it.`;
+
 const CORE_RULES = `Rules:
 - One call: state does not persist
 - Tools are pre-defined as bash functions—DO NOT redefine them
@@ -106,6 +117,30 @@ Example (Parallel calls):
   wait
   echo "SF: $(jq -r . /mnt/data/sf.json)"
   echo "NY: $(jq -r . /mnt/data/ny.json)"`;
+
+const ATTACHED_CORE_RULES = `Rules:
+- One call: process state does not persist; project files do
+- Tools are pre-defined as bash functions—DO NOT redefine them
+- Each tool function accepts a JSON string argument
+- Resolve tool calls into variables before changing project files; do not redirect a tool call directly into the project
+- Set data_dir=${ATTACHED_BASH_DATA_DIRECTORY}; save generated artifacts there, and write durable project files relative to the working directory
+- Tool stdout is normalized to one compact JSON value when possible; parse saved stdout once, then use fromjson? // . only for JSON-string fields
+- Only echo/printf output returns to the model
+- ${ATTACHED_BASH_ARTIFACT_PATH_GUIDANCE}
+- ${BASH_SHELL_GUIDANCE}
+- timeout caps one sandbox run/replay iteration, not the total multi-round-trip workflow`;
+
+const ATTACHED_EXAMPLES = `Example (Complete workflow in one call):
+  data=$(query_database '{"sql": "SELECT * FROM users"}')
+  echo "$data" | jq '.[] | .name'
+
+Example (Parallel calls):
+  data_dir=${ATTACHED_BASH_DATA_DIRECTORY}
+  { sf=$(web_search '{"query": "SF weather"}'); printf '%s\n' "$sf" > "$data_dir/sf.json"; } &
+  { ny=$(web_search '{"query": "NY weather"}'); printf '%s\n' "$ny" > "$data_dir/ny.json"; } &
+  wait
+  echo "SF: $(jq -r . "$data_dir/sf.json")"
+  echo "NY: $(jq -r . "$data_dir/ny.json")"`;
 
 const CODE_PARAM_DESCRIPTION = `Bash code that calls tools programmatically. Tools are available as bash functions.
 
@@ -175,7 +210,7 @@ export const BashProgrammaticToolCallingDefinition = {
   schema: BashProgrammaticToolCallingSchema,
 } as const;
 
-function prepareBashProgrammaticCode(code: string): string {
+export function prepareBashProgrammaticCode(code: string): string {
   /* The Code API's generated Bash wrapper reads `$!` after user code. A user
    * `set -u` makes that expansion fail when no background process has run.
    * Seed and reap a no-op job before user code so strict mode remains active
@@ -326,7 +361,38 @@ export function createBashProgrammaticToolCallingTool(
   const maxRunTimeoutMs = resolveCodeApiRunTimeoutMs(initParams.runTimeoutMs);
   const proxy = initParams.proxy ?? process.env.PROXY;
   const debug = initParams.debug ?? process.env.BASH_PTC_DEBUG === 'true';
+  const workspaceId = initParams.workspaceId?.trim();
+  const hasWorkspace = workspaceId != null && workspaceId !== '';
+  if (
+    hasWorkspace &&
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workspaceId)
+  ) {
+    throw new Error('Invalid attached workspace identifier');
+  }
+  const requestAuthHeaders: t.CodeApiAuthHeaders = hasWorkspace
+    ? async (): Promise<t.CodeApiAuthHeaderMap> => ({
+      ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
+      [CODE_API_WORKSPACE_HEADER]: workspaceId,
+    })
+    : (initParams.authHeaders ?? {});
   const EXEC_ENDPOINT = buildCodeApiEndpoint(baseUrl, 'exec/programmatic');
+  const description = hasWorkspace
+    ? BashProgrammaticToolCallingDescription.replace(
+      STATELESS_WARNING,
+      ATTACHED_WORKSPACE_WARNING
+    )
+      .replace(CORE_RULES, ATTACHED_CORE_RULES)
+      .replace(EXAMPLES, ATTACHED_EXAMPLES)
+    : BashProgrammaticToolCallingDescription;
+  const schema = createBashProgrammaticToolCallingSchema(maxRunTimeoutMs);
+  if (hasWorkspace) {
+    schema.properties.code.description = CODE_PARAM_DESCRIPTION.replace(
+      STATELESS_WARNING,
+      ATTACHED_WORKSPACE_WARNING
+    )
+      .replace(CORE_RULES, ATTACHED_CORE_RULES)
+      .replace(EXAMPLES, ATTACHED_EXAMPLES);
+  }
 
   return tool(
     async (rawParams, config) => {
@@ -449,7 +515,7 @@ export function createBashProgrammaticToolCallingTool(
 
         /* Raw `code`, not `preparedCode`: the `$!` guard exists for the
          * programmatic replay wrapper, which plain `/exec` never applies. */
-        if (needsNoTools) {
+        if (needsNoTools && !hasWorkspace) {
           return await runPlainExecution({
             baseUrl,
             lang: 'bash',
@@ -459,7 +525,7 @@ export function createBashProgrammaticToolCallingTool(
             files,
             runtimeSessionHint,
             proxy,
-            authHeaders: initParams.authHeaders,
+            authHeaders: requestAuthHeaders,
             executionProfile: initParams.executionProfile,
           });
         }
@@ -478,8 +544,9 @@ export function createBashProgrammaticToolCallingTool(
               : {}),
           },
           proxy,
-          initParams.authHeaders,
-          initParams.executionProfile
+          requestAuthHeaders,
+          initParams.executionProfile,
+          config.signal
         );
 
         // ====================================================================
@@ -519,8 +586,9 @@ export function createBashProgrammaticToolCallingTool(
               tool_results: toolResults,
             },
             proxy,
-            initParams.authHeaders,
-            initParams.executionProfile
+            requestAuthHeaders,
+            initParams.executionProfile,
+            config.signal
           );
         }
 
@@ -529,7 +597,11 @@ export function createBashProgrammaticToolCallingTool(
         // ====================================================================
 
         if (response.status === 'completed') {
-          return formatCompletedResponse(response, code);
+          return formatCompletedResponse(
+            response,
+            code,
+            hasWorkspace ? 'execution' : 'session'
+          );
         }
 
         if (response.status === 'error') {
@@ -551,8 +623,8 @@ export function createBashProgrammaticToolCallingTool(
     },
     {
       name: Constants.BASH_PROGRAMMATIC_TOOL_CALLING,
-      description: BashProgrammaticToolCallingDescription,
-      schema: createBashProgrammaticToolCallingSchema(maxRunTimeoutMs),
+      description,
+      schema,
       responseFormat: Constants.CONTENT_AND_ARTIFACT,
     }
   );
