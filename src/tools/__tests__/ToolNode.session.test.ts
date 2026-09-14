@@ -125,6 +125,36 @@ describe('ToolNode code execution session management', () => {
       expect(capturedConfigs[0]._injected_files).toBeUndefined();
     });
 
+    it('scopes direct-path deletions to the identities injected into the call', async () => {
+      const capturedConfigs: Record<string, unknown>[] = [];
+      const sessions: t.ToolSessionMap = new Map();
+      sessions.set(Constants.EXECUTE_CODE, {
+        session_id: 'prior-session',
+        files: [
+          { id: 'file1', name: 'data.csv', storage_session_id: 'prior-session' },
+          { id: 'file2', name: 'chart.png', storage_session_id: 'prior-session' },
+        ],
+        lastUpdated: Date.now(),
+      } satisfies t.CodeSessionContext);
+      const mockTool = createMockCodeTool({
+        capturedConfigs,
+        artifact: {
+          session_id: 'delete-session',
+          files: [],
+          deleted_files: ['data.csv'],
+        },
+      });
+      const toolNode = new ToolNode({ tools: [mockTool], sessions });
+
+      await toolNode.invoke({
+        messages: [createAIMessageWithCodeCall('call_delete')],
+      });
+
+      expect(sessions.get(Constants.EXECUTE_CODE)?.files).toEqual([
+        { id: 'file2', name: 'chart.png', storage_session_id: 'prior-session' },
+      ]);
+    });
+
     it('isolates session injection and updates by the agent codeSessionKey', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];
       const sessions: t.ToolSessionMap = new Map();
@@ -645,7 +675,11 @@ describe('ToolNode code execution session management', () => {
         toolNode as unknown as {
           storeCodeSessionFromResults: (
             results: t.ToolExecuteResult[],
-            requestMap: Map<string, t.ToolCallRequest>
+            requestMap: Map<string, t.ToolCallRequest>,
+            baselineByRequestId: ReadonlyMap<
+              string,
+              ReadonlyMap<string, string>
+            >
           ) => void;
         }
       ).storeCodeSessionFromResults.bind(toolNode);
@@ -663,6 +697,12 @@ describe('ToolNode code execution session management', () => {
         }],
         new Map([
           ['tc-delete', { id: 'tc-delete', name: Constants.EXECUTE_CODE, args: {} }],
+        ]),
+        new Map([
+          ['tc-delete', new Map([
+            ['data.csv', 'old-sess\0f1'],
+            ['chart.png', 'old-sess\0f2'],
+          ])],
         ])
       );
 
@@ -691,7 +731,11 @@ describe('ToolNode code execution session management', () => {
         toolNode as unknown as {
           storeCodeSessionFromResults: (
             results: t.ToolExecuteResult[],
-            requestMap: Map<string, t.ToolCallRequest>
+            requestMap: Map<string, t.ToolCallRequest>,
+            baselineByRequestId: ReadonlyMap<
+              string,
+              ReadonlyMap<string, string>
+            >
           ) => void;
         }
       ).storeCodeSessionFromResults.bind(toolNode);
@@ -709,12 +753,150 @@ describe('ToolNode code execution session management', () => {
         }],
         new Map([
           ['tc-replace', { id: 'tc-replace', name: Constants.EXECUTE_CODE, args: {} }],
+        ]),
+        new Map([
+          ['tc-replace', new Map([['data.csv', 'old-sess\0old-file']])],
         ])
       );
 
       const stored = sessions.get(Constants.EXECUTE_CODE) as t.CodeSessionContext;
       expect(stored.files).toEqual([
         { id: 'new-file', name: 'data.csv', storage_session_id: 'new-sess' },
+      ]);
+    });
+
+    it('does not let a delayed deletion remove a newer same-path identity', () => {
+      const sessions: t.ToolSessionMap = new Map();
+      sessions.set(Constants.EXECUTE_CODE, {
+        session_id: 'current-sess',
+        files: [
+          { id: 'current-file', name: 'data.csv', storage_session_id: 'current-sess' },
+        ],
+        lastUpdated: Date.now(),
+      } satisfies t.CodeSessionContext);
+      const toolNode = new ToolNode({
+        tools: [createMockCodeTool({ capturedConfigs: [] })],
+        sessions,
+        eventDrivenMode: true,
+      });
+      const storeMethod = (
+        toolNode as unknown as {
+          storeCodeSessionFromResults: (
+            results: t.ToolExecuteResult[],
+            requestMap: Map<string, t.ToolCallRequest>,
+            baselineByRequestId: ReadonlyMap<
+              string,
+              ReadonlyMap<string, string>
+            >
+          ) => void;
+        }
+      ).storeCodeSessionFromResults.bind(toolNode);
+
+      storeMethod(
+        [{
+          toolCallId: 'tc-stale-delete',
+          content: 'removed old data.csv',
+          artifact: {
+            session_id: 'delayed-sess',
+            files: [],
+            deleted_files: ['data.csv'],
+          },
+          status: 'success',
+        }],
+        new Map([
+          ['tc-stale-delete', {
+            id: 'tc-stale-delete',
+            name: Constants.EXECUTE_CODE,
+            args: {},
+          }],
+        ]),
+        new Map([
+          ['tc-stale-delete', new Map([['data.csv', 'old-sess\0old-file']])],
+        ])
+      );
+
+      const stored = sessions.get(Constants.EXECUTE_CODE) as t.CodeSessionContext;
+      expect(stored.files).toEqual([
+        { id: 'current-file', name: 'data.csv', storage_session_id: 'current-sess' },
+      ]);
+    });
+
+    it('does not revive a deleted file from a concurrent inherited echo', () => {
+      const sessions: t.ToolSessionMap = new Map();
+      sessions.set(Constants.EXECUTE_CODE, {
+        session_id: 'old-sess',
+        files: [
+          { id: 'f1', name: 'data.csv', storage_session_id: 'old-sess' },
+          { id: 'f2', name: 'chart.png', storage_session_id: 'old-sess' },
+        ],
+        lastUpdated: Date.now(),
+      } satisfies t.CodeSessionContext);
+      const toolNode = new ToolNode({
+        tools: [createMockCodeTool({ capturedConfigs: [] })],
+        sessions,
+        eventDrivenMode: true,
+      });
+      const storeMethod = (
+        toolNode as unknown as {
+          storeCodeSessionFromResults: (
+            results: t.ToolExecuteResult[],
+            requestMap: Map<string, t.ToolCallRequest>,
+            baselineByRequestId: ReadonlyMap<
+              string,
+              ReadonlyMap<string, string>
+            >
+          ) => void;
+        }
+      ).storeCodeSessionFromResults.bind(toolNode);
+      const baseline = new Map([
+        ['data.csv', 'old-sess\0f1'],
+        ['chart.png', 'old-sess\0f2'],
+      ]);
+
+      storeMethod(
+        [
+          {
+            toolCallId: 'tc-delete',
+            content: 'removed data.csv',
+            artifact: {
+              session_id: 'delete-sess',
+              files: [],
+              deleted_files: ['data.csv'],
+            },
+            status: 'success',
+          },
+          {
+            toolCallId: 'tc-stale-echo',
+            content: 'read data.csv',
+            artifact: {
+              session_id: 'echo-sess',
+              files: [{
+                id: 'f1',
+                name: 'data.csv',
+                storage_session_id: 'old-sess',
+                inherited: true,
+              }],
+            },
+            status: 'success',
+          },
+        ],
+        new Map([
+          ['tc-delete', { id: 'tc-delete', name: Constants.EXECUTE_CODE, args: {} }],
+          ['tc-stale-echo', {
+            id: 'tc-stale-echo',
+            name: Constants.EXECUTE_CODE,
+            args: {},
+          }],
+        ]),
+        new Map([
+          ['tc-delete', baseline],
+          ['tc-stale-echo', baseline],
+        ])
+      );
+
+      const stored = sessions.get(Constants.EXECUTE_CODE) as t.CodeSessionContext;
+      expect(stored.files).toEqual([
+        { id: 'f2', name: 'chart.png', storage_session_id: 'old-sess' },
       ]);
     });
 

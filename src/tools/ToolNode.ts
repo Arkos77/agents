@@ -221,6 +221,8 @@ type RunToolBatchContext<T = unknown> = {
   batchScopeId?: string;
   /** Batch-local sink for post-substitution args. */
   resolvedArgsByCallId?: ResolvedArgsByCallId;
+  /** File identities actually injected into each direct code call. */
+  codeSessionBaselineByCallId?: Map<string, ReadonlyMap<string, string>>;
   /**
    * Frozen pre-batch view of the tool-output registry. When supplied,
    * `runTool` resolves `{{tool…turn…}}` placeholders against this
@@ -663,23 +665,33 @@ function updateCodeSession(
   sessionKey: string,
   execSessionId: string,
   files: t.FileRefs | undefined,
-  deletedFiles: readonly string[] | undefined
+  deletedFiles: readonly string[] | undefined,
+  baselineIdentityByName: ReadonlyMap<string, string> | undefined
 ): void {
   const newFiles = files ?? [];
-  const deletedFileNames = new Set(deletedFiles ?? []);
   const existingSession = sessions.get(sessionKey) as
     | t.CodeSessionContext
     | undefined;
   const existingFiles = existingSession?.files ?? [];
+  const deletedIdentityByName = new Map<string, string>();
+  for (const name of deletedFiles ?? []) {
+    const identity = baselineIdentityByName?.get(name);
+    if (identity != null) {
+      deletedIdentityByName.set(name, identity);
+    }
+  }
 
   /* Absence from `files` is not a deletion signal: older Code API versions
    * and truncated responses can omit otherwise-live refs. Remove only paths
-   * explicitly attested by `deleted_files`, while allowing a newly persisted
-   * ref at the same path to replace the old one below. */
+   * explicitly attested by `deleted_files`, and only while the current ref
+   * still has the identity injected into that request. */
   if (newFiles.length === 0) {
     sessions.set(sessionKey, {
       session_id: execSessionId,
-      files: existingFiles.filter((file) => !deletedFileNames.has(file.name)),
+      files: existingFiles.filter(
+        (file) =>
+          deletedIdentityByName.get(file.name) !== fileIdentityKey(file)
+      ),
       lastUpdated: Date.now(),
     });
     return;
@@ -691,15 +703,24 @@ function updateCodeSession(
   const filesWithSession: t.FileRefs = [];
   const newFileNames = new Set<string>();
   const incomingByIdentity = new Map<string, number>();
+  const existingIdentities = new Set(existingFiles.map(fileIdentityKey));
   for (const file of newFiles) {
     const withSession = {
       ...file,
       storage_session_id: file.storage_session_id ?? execSessionId,
     };
-    incomingByIdentity.set(
-      fileIdentityKey(withSession),
-      filesWithSession.length
-    );
+    const identity = fileIdentityKey(withSession);
+    /* An inherited echo is evidence that a request observed an existing ref,
+     * not authority to resurrect one removed by a concurrent sibling. Fresh
+     * and modified outputs remain eligible to replace by path below. */
+    if (
+      file.inherited === true &&
+      (!existingIdentities.has(identity) ||
+        deletedIdentityByName.get(file.name) === identity)
+    ) {
+      continue;
+    }
+    incomingByIdentity.set(identity, filesWithSession.length);
     newFileNames.add(withSession.name);
     filesWithSession.push(withSession);
   }
@@ -710,7 +731,9 @@ function updateCodeSession(
     if (idx !== undefined) {
       filesWithSession[idx] = { ...e, ...filesWithSession[idx] };
     }
-    if (!newFileNames.has(e.name) && !deletedFileNames.has(e.name)) {
+    const explicitlyDeleted =
+      deletedIdentityByName.get(e.name) === fileIdentityKey(e);
+    if (!newFileNames.has(e.name) && !explicitlyDeleted) {
       filteredExisting.push(e);
     }
   }
@@ -1904,6 +1927,20 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           | t.CodeSessionContext
           | undefined;
         const execSessionId = codeSession?.session_id;
+        if (
+          call.id != null &&
+          batchContext.codeSessionBaselineByCallId != null
+        ) {
+          batchContext.codeSessionBaselineByCallId.set(
+            call.id,
+            new Map(
+              (codeSession?.files ?? []).map((file) => [
+                file.name,
+                fileIdentityKey(file),
+              ])
+            )
+          );
+        }
         if (execSessionId != null && execSessionId !== '') {
           invokeParams = {
             ...invokeParams,
@@ -3101,7 +3138,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     baselineByRequestId: ReadonlyMap<
       string,
       ReadonlyMap<string, string>
-    >
+    > = new Map()
   ): void {
     if (!this.sessions) {
       return;
@@ -3138,7 +3175,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         this.codeSessionKey,
         execSessionId,
         artifact?.files,
-        artifact?.deleted_files
+        artifact?.deleted_files,
+        baselineByRequestId.get(request.id)
       );
     }
   }
@@ -3207,6 +3245,10 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     outputs: (BaseMessage | Command)[],
     config: RunnableConfig,
     resolvedArgsByCallId?: ResolvedArgsByCallId,
+    codeSessionBaselineByCallId?: ReadonlyMap<
+      string,
+      ReadonlyMap<string, string>
+    >,
     errorOwnership?: ToolErrorOwnership
   ): Promise<void> {
     const ownership = errorOwnership ?? this.looseErrorOwnership;
@@ -3253,7 +3295,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             this.codeSessionKey,
             execSessionId,
             artifact?.files,
-            artifact?.deleted_files
+            artifact?.deleted_files,
+            codeSessionBaselineByCallId?.get(toolCallId)
           );
         }
       }
@@ -5268,6 +5311,10 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
      * ToolNode cannot read or wipe each other's entries.
      */
     const resolvedArgsByCallId = new Map<string, Record<string, unknown>>();
+    const codeSessionBaselineByCallId = new Map<
+      string,
+      ReadonlyMap<string, string>
+    >();
     /** Per-invocation error-completion ownership — see `ToolErrorOwnership`. */
     const errorOwnership = createToolErrorOwnership();
     /**
@@ -5348,6 +5395,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           batchScopeId,
           preBatchSnapshot: replayInputSnapshot,
           resolvedArgsByCallId,
+          codeSessionBaselineByCallId,
           errorOwnership,
           additionalContextsSink: directAdditionalContexts,
           replayBatchKey: sendReplayBatchKey,
@@ -5376,6 +5424,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         [sendOutput],
         config,
         resolvedArgsByCallId,
+        codeSessionBaselineByCallId,
         errorOwnership
       );
     } else {
@@ -5633,6 +5682,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
                 turn,
                 batchScopeId,
                 resolvedArgsByCallId,
+                codeSessionBaselineByCallId,
                 errorOwnership,
                 preBatchSnapshot,
                 additionalContextsSink: directAdditionalContexts,
@@ -5670,6 +5720,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             unhandledDirectOutputs,
             config,
             resolvedArgsByCallId,
+            codeSessionBaselineByCallId,
             errorOwnership
           );
           for (let i = 0; i < directCalls.length; i++) {
@@ -5745,6 +5796,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             turn,
             batchScopeId,
             resolvedArgsByCallId,
+            codeSessionBaselineByCallId,
             errorOwnership,
             preBatchSnapshot,
             additionalContextsSink: directAdditionalContexts,
@@ -5759,6 +5811,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           toolOutputs,
           config,
           resolvedArgsByCallId,
+          codeSessionBaselineByCallId,
           errorOwnership
         );
         // Append accumulated additionalContexts as a single
