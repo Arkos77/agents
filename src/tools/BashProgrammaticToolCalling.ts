@@ -515,7 +515,8 @@ export function createBashProgrammaticToolCallingTool(
           },
           proxy,
           requestAuthHeaders,
-          initParams.executionProfile
+          initParams.executionProfile,
+          config.signal
         );
 
         // ====================================================================
@@ -556,7 +557,8 @@ export function createBashProgrammaticToolCallingTool(
             },
             proxy,
             requestAuthHeaders,
-            initParams.executionProfile
+            initParams.executionProfile,
+            config.signal
           );
         }
 

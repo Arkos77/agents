@@ -173,6 +173,52 @@ describe('CodeAPI auth header injection', () => {
     );
   });
 
+  it('sends an authenticated explicit cancellation when a PTC request aborts', async () => {
+    const controller = new AbortController();
+    fetchMock
+      .mockImplementationOnce((_url, rawInit) => {
+        const init = rawInit as RequestInit;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true }
+          );
+        });
+      })
+      .mockResolvedValueOnce(jsonResponse({ status: 'cancellation_requested' }));
+
+    const request = makeRequest(
+      'https://code.example.com/exec/programmatic',
+      { code: 'sleep 30' },
+      undefined,
+      { Authorization: 'Bearer scoped' },
+      'stateful',
+      controller.signal
+    ).catch((error: unknown) => error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort();
+    await request;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const requestHeaders = requestHeadersAt(0);
+    const requestId = requestHeaders['X-LibreChat-Code-Request-ID'];
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://code.example.com/exec/programmatic/cancel'
+    );
+    expect(requestHeadersAt(1)).toEqual(
+      expect.objectContaining({
+        Authorization: 'Bearer scoped',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+      })
+    );
+    expect(requestBodyAt(1)).toEqual({ request_id: requestId });
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).signal).not.toBe(
+      controller.signal
+    );
+  });
+
   it('maps dynamic auth-header failures to the safe authorization error', async () => {
     const authHeaders = jest.fn(async () => {
       throw new Error(
