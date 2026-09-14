@@ -265,6 +265,99 @@ describe('ToolNode code execution session management', () => {
       ]);
     });
 
+    it('retains factory-provided inherited refs absent from the session map', async () => {
+      const sessions: t.ToolSessionMap = new Map();
+      const toolNode = new ToolNode({
+        tools: [
+          createMockCodeTool({
+            capturedConfigs: [],
+            artifact: {
+              session_id: 'factory-session',
+              files: [
+                {
+                  id: 'factory-file',
+                  name: 'factory.csv',
+                  storage_session_id: 'factory-storage',
+                  inherited: true,
+                },
+              ],
+            },
+          }),
+        ],
+        sessions,
+      });
+
+      await toolNode.invoke({
+        messages: [createAIMessageWithCodeCall('call_factory_file')],
+      });
+
+      expect(sessions.get(Constants.EXECUTE_CODE)?.files).toEqual([
+        {
+          id: 'factory-file',
+          name: 'factory.csv',
+          storage_session_id: 'factory-storage',
+          inherited: true,
+        },
+      ]);
+    });
+
+    it('reconciles deletions from idless direct calls', async () => {
+      const capturedConfigs: Record<string, unknown>[] = [];
+      const sessions: t.ToolSessionMap = new Map();
+      sessions.set(Constants.EXECUTE_CODE, {
+        session_id: 'prior-session',
+        files: [
+          {
+            id: 'file1',
+            name: 'data.csv',
+            storage_session_id: 'prior-session',
+          },
+        ],
+        lastUpdated: Date.now(),
+      } satisfies t.CodeSessionContext);
+      const idlessTool = {
+        name: Constants.EXECUTE_CODE,
+        description: 'Execute code in a sandbox',
+        schema: z.object({ lang: z.string(), code: z.string() }),
+        invoke: jest.fn(async (_input: unknown, config: Record<string, unknown>) => {
+          capturedConfigs.push({
+            ...((config.toolCall as Record<string, unknown> | undefined) ?? {}),
+          });
+          return new ToolMessage({
+            content: 'removed data.csv',
+            tool_call_id: '',
+            status: 'success',
+            artifact: {
+              session_id: 'delete-session',
+              files: [],
+              deleted_files: ['data.csv'],
+            },
+          });
+        }),
+      } as unknown as StructuredToolInterface;
+      const toolNode = new ToolNode({
+        tools: [idlessTool],
+        sessions,
+      });
+
+      await toolNode.invoke({
+        messages: [
+          new AIMessage({
+            content: '',
+            tool_calls: [
+              {
+                name: Constants.EXECUTE_CODE,
+                args: { lang: 'python', code: 'remove()' },
+              },
+            ],
+          }),
+        ],
+      });
+
+      expect(capturedConfigs).toHaveLength(1);
+      expect(sessions.get(Constants.EXECUTE_CODE)?.files).toEqual([]);
+    });
+
     it('isolates session injection and updates by the agent codeSessionKey', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];
       const sessions: t.ToolSessionMap = new Map();

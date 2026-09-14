@@ -689,8 +689,12 @@ function updateCodeSession(
   const existingSession = sessions.get(sessionKey) as
     | t.CodeSessionContext
     | undefined;
-  const existingFiles = existingSession?.files ?? [];
   const existingSessionId = existingSession?.session_id ?? '';
+  const existingFiles = (existingSession?.files ?? []).map((file) =>
+    file.storage_session_id == null
+      ? { ...file, storage_session_id: existingSessionId }
+      : file
+  );
   const deletedIdentityByName = new Map<string, string>();
   for (const name of deletedFiles ?? []) {
     const identity = baselineIdentityByName?.get(name);
@@ -731,11 +735,14 @@ function updateCodeSession(
       storage_session_id: file.storage_session_id ?? execSessionId,
     };
     const identity = fileIdentityKey(withSession);
+    const wasTrackedByRequest =
+      baselineIdentityByName?.get(file.name) === identity;
     /* An inherited echo is evidence that a request observed an existing ref,
      * not authority to resurrect one removed by a concurrent sibling. Fresh
      * and modified outputs remain eligible to replace by path below. */
     if (
       file.inherited === true &&
+      wasTrackedByRequest &&
       (!existingIdentities.has(identity) ||
         deletedIdentityByName.get(file.name) === identity)
     ) {
@@ -1949,12 +1956,9 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           | t.CodeSessionContext
           | undefined;
         const execSessionId = codeSession?.session_id;
-        if (
-          call.id != null &&
-          batchContext.codeSessionBaselineByCallId != null
-        ) {
+        if (batchContext.codeSessionBaselineByCallId != null) {
           batchContext.codeSessionBaselineByCallId.set(
-            call.id,
+            call.id ?? '',
             codeSessionIdentityByName(codeSession)
           );
         }
@@ -5079,12 +5083,11 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         baseContext.resolvedArgsByCallId.set(call.id, result.resolvedArgs);
       }
       if (
-        call.id != null &&
         result.codeSessionBaseline != null &&
         baseContext.codeSessionBaselineByCallId != null
       ) {
         baseContext.codeSessionBaselineByCallId.set(
-          call.id,
+          call.id ?? '',
           new Map(result.codeSessionBaseline)
         );
       }
@@ -5125,9 +5128,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           ? undefined
           : baseContext.resolvedArgsByCallId?.get(call.id);
       const codeSessionBaseline =
-        call.id == null
-          ? undefined
-          : baseContext.codeSessionBaselineByCallId?.get(call.id);
+        baseContext.codeSessionBaselineByCallId?.get(call.id ?? '');
       const result: SettledDirectToolResult = {
         proposal: structuredClone({
           name: call.name,
