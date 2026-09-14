@@ -11,6 +11,7 @@ import {
   addCodeApiExecutionProfileHeader,
   emptyOutputMessage,
   buildCodeApiHttpErrorMessage,
+  buildCodeApiExecutionErrorMessage,
   CodeApiRequestError,
   buildCodeApiEndpoint,
   getCodeBaseURL,
@@ -27,6 +28,7 @@ import { appendExecutionArtifactFileSummary } from '@/tools/CodeSessionFileSumma
 import { resolveFetchProxyAgent } from '@/utils/proxy';
 import { INTENT_PROPERTY } from '@/tools/intentArg';
 import { Constants } from '@/common';
+import { prepareBashProgrammaticCode } from './BashProgrammaticToolCalling';
 
 config();
 
@@ -148,7 +150,7 @@ export function buildBashExecutionToolDescription(options?: {
 }
 
 const STATELESS_BASH_PARAM_NOTE =
-  'The environment is stateless; variables and state don\'t persist between executions.';
+  "The environment is stateless; variables and state don't persist between executions.";
 const STATEFUL_BASH_PARAM_NOTE =
   'Files written to /mnt/data persist between calls on the same warm machine. Each call runs in a fresh sandbox: shell variables, cwd, /tmp, and background processes do NOT survive the call. Only /mnt/data is durable.';
 const ATTACHED_BASH_PARAM_NOTE =
@@ -256,7 +258,7 @@ function createBashExecutionTool(
 
       const postData: Record<string, unknown> = {
         lang: 'bash',
-        code: command,
+        code: hasWorkspace ? prepareBashProgrammaticCode(command) : command,
         ...(hasWorkspace ? { tools: [] } : {}),
         ...rest,
         ...executionParams,
@@ -326,7 +328,15 @@ function createBashExecutionTool(
           );
         }
 
-        const result: t.ExecuteResult = await response.json();
+        const result = (await response.json()) as t.ExecuteResult &
+          Partial<t.ProgrammaticExecutionResponse>;
+        if (hasWorkspace && result.status !== 'completed') {
+          throw new CodeApiRequestError(
+            buildCodeApiExecutionErrorMessage(
+              result as t.ProgrammaticExecutionResponse
+            )
+          );
+        }
         let formattedOutput = '';
         if (result.stdout) {
           formattedOutput += `stdout:\n${result.stdout}\n`;
@@ -350,40 +360,45 @@ function createBashExecutionTool(
         const runtimeEcho =
           result.runtime_session_id != null
             ? {
-              runtime_session_id: result.runtime_session_id,
-              runtime_status: result.runtime_status,
-            }
+                runtime_session_id: result.runtime_session_id,
+                runtime_status: result.runtime_status,
+              }
             : {};
         return [
           hasWorkspace
             ? appendExecutionArtifactFileSummary(
-              outputWithDeliveryWarning,
-              result.files
-            )
-            : appendCodeSessionFileSummary(outputWithDeliveryWarning, result.files),
+                outputWithDeliveryWarning,
+                result.files
+              )
+            : appendCodeSessionFileSummary(
+                outputWithDeliveryWarning,
+                result.files
+              ),
           (hasFiles
             ? {
-              session_id: result.session_id,
-              files: result.files,
-              ...(artifactDelivery != null
-                ? { artifact_delivery: artifactDelivery }
-                : {}),
-              ...runtimeEcho,
-            }
+                session_id: result.session_id,
+                files: result.files,
+                ...(artifactDelivery != null
+                  ? { artifact_delivery: artifactDelivery }
+                  : {}),
+                ...runtimeEcho,
+              }
             : {
-              session_id: result.session_id,
-              ...(artifactDelivery != null
-                ? { artifact_delivery: artifactDelivery }
-                : {}),
-              ...runtimeEcho,
-            }) satisfies t.CodeExecutionArtifact,
+                session_id: result.session_id,
+                ...(artifactDelivery != null
+                  ? { artifact_delivery: artifactDelivery }
+                  : {}),
+                ...runtimeEcho,
+              }) satisfies t.CodeExecutionArtifact,
         ];
       } catch (error) {
         const messageWithReminder = appendFailedExecutionFileReminder(
           normalizeCodeApiRequestError(error).message,
           command
         );
-        throw new CodeApiRequestError(`Execution error:\n\n${messageWithReminder}`);
+        throw new CodeApiRequestError(
+          `Execution error:\n\n${messageWithReminder}`
+        );
       }
     },
     {

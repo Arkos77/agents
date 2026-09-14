@@ -430,9 +430,6 @@ export type CodeExecutionToolParams =
       files?: CodeEnvFile[];
       /** Optional host-supplied Code API auth headers. */
       authHeaders?: CodeApiAuthHeaders;
-      /** Trusted attached-workspace identifier. When present, Bash executes
-       * through Code API replay while preserving that workspace boundary. */
-      workspaceId?: string;
       /**
        * Advertise filesystem-tier stateful sessions in the tool description
        * and allow a trusted runtime affinity hint onto the wire. Resolve this,
@@ -1373,10 +1370,19 @@ export type ProgrammaticExecutionArtifact = {
 };
 
 /** Parameters for creating a bash execution tool (same API as CodeExecutor, bash-only) */
-export type BashExecutionToolParams = CodeExecutionToolParams;
+export type BashExecutionToolParams =
+  | undefined
+  | (Exclude<CodeExecutionToolParams, undefined> & {
+      /** Trusted attached-workspace identifier selected by the host. */
+      workspaceId?: string;
+    });
 
 /** Parameters for creating a bash programmatic tool calling tool (same API as PTC, bash-only) */
-export type BashProgrammaticToolCallingParams = ProgrammaticToolCallingParams;
+export type BashProgrammaticToolCallingParams =
+  ProgrammaticToolCallingParams & {
+    /** Trusted attached-workspace identifier selected by the host. */
+    workspaceId?: string;
+  };
 
 /**
  * Initialization parameters for the PTC tool
@@ -1388,8 +1394,6 @@ export type ProgrammaticToolCallingParams = {
   executionProfile?: CodeApiExecutionProfile;
   /** Trusted warm-runtime affinity hint for this agent invocation. */
   runtimeSessionHint?: string;
-  /** Trusted attached-workspace identifier selected by the host. */
-  workspaceId?: string;
   /** Safety limit for round-trips (default: 20) */
   maxRoundTrips?: number;
   /** Maximum per-sandbox-run timeout for PTC's legacy `timeout` field. */

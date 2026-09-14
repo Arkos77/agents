@@ -186,7 +186,9 @@ describe('CodeAPI auth header injection', () => {
           );
         });
       })
-      .mockResolvedValueOnce(jsonResponse({ status: 'cancellation_requested' }));
+      .mockResolvedValueOnce(
+        jsonResponse({ status: 'cancellation_requested' })
+      );
 
     const request = makeRequest(
       'https://code.example.com/exec/programmatic',
@@ -334,6 +336,7 @@ describe('CodeAPI auth header injection', () => {
   it('surfaces artifact delivery failures from direct code execution', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
+        status: 'completed',
         session_id: 'session_123',
         stdout: 'code completed\n',
         files: [],
@@ -486,6 +489,7 @@ describe('CodeAPI auth header injection', () => {
   it('executes injected skill files inside a selected attached workspace', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
+        status: 'completed',
         session_id: 'session_123',
         stdout: 'skill output\n',
         files: [
@@ -522,7 +526,9 @@ describe('CodeAPI auth header injection', () => {
     );
 
     expect(output).toContain('Execution artifacts: 1 file(s)');
-    expect(output).not.toContain('persisted file(s) are available in /mnt/data');
+    expect(output).not.toContain(
+      'persisted file(s) are available in /mnt/data'
+    );
     expect(tool.description).toContain('selected persistent project');
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
@@ -540,6 +546,25 @@ describe('CodeAPI auth header injection', () => {
         tools: [],
         files: [expect.objectContaining({ name: 'skills/report/run.js' })],
       })
+    );
+    expect(String(requestBodyAt(0).code)).toContain(': &\nwait "$!"');
+  });
+
+  it('surfaces a selected-workspace execution error instead of formatting success', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'error',
+        error: 'sandbox command failed',
+        session_id: 'session_123',
+      })
+    );
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      workspaceId: 'project:a',
+    });
+
+    await expect(tool.invoke({ command: 'exit 1' })).rejects.toThrow(
+      'Code execution failed.'
     );
   });
 
@@ -635,16 +660,28 @@ describe('CodeAPI auth header injection', () => {
 
   it.each([
     ['Bash', () => createBashExecutionTool().invoke({ command: 'echo 1' })],
-    ['Code', () => createCodeExecutionTool().invoke({ lang: 'py', code: 'print(1)' })],
-    ['Python PTC', () => createProgrammaticToolCallingTool().invoke({ code: 'print(1)' }, {
-      toolCall: { toolMap: toolMap(), toolDefs },
-    } as RunnableConfig)],
-  ] as const)('preserves non-retryable errors through the %s wrapper', async (_name, invoke) => {
-    fetchMock.mockResolvedValueOnce(errorResponse(409, JSON.stringify({ error: 'bridge_worker_mismatch' })));
-    const error = await invoke().catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(CodeApiRequestError);
-    expect(error).toHaveProperty('retryable', false);
-  });
+    [
+      'Code',
+      () => createCodeExecutionTool().invoke({ lang: 'py', code: 'print(1)' }),
+    ],
+    [
+      'Python PTC',
+      () =>
+        createProgrammaticToolCallingTool().invoke({ code: 'print(1)' }, {
+          toolCall: { toolMap: toolMap(), toolDefs },
+        } as RunnableConfig),
+    ],
+  ] as const)(
+    'preserves non-retryable errors through the %s wrapper',
+    async (_name, invoke) => {
+      fetchMock.mockResolvedValueOnce(
+        errorResponse(409, JSON.stringify({ error: 'bridge_worker_mismatch' }))
+      );
+      const error = await invoke().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(CodeApiRequestError);
+      expect(error).toHaveProperty('retryable', false);
+    }
+  );
 
   it('does not tell programmatic Bash to rerun files after a permanent mismatch', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -1667,7 +1704,7 @@ describe('CodeAPI auth header injection', () => {
         {
           code: [
             'lookup_user "{}" > /mnt/data/user.json',
-            'jq -r \'.result.name\' /mnt/data/user.json',
+            "jq -r '.result.name' /mnt/data/user.json",
           ].join('\n'),
         },
         {

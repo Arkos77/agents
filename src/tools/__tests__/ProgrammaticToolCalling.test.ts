@@ -34,6 +34,10 @@ import {
   selectProgrammaticTools,
 } from '../ProgrammaticCallerPolicy';
 import { Constants } from '@/common';
+import {
+  appendExecutionArtifactFileSummary,
+  stripCodeSessionFileSummary,
+} from '../CodeSessionFileSummary';
 
 describe('ProgrammaticToolCalling', () => {
   describe('tool descriptions', () => {
@@ -65,6 +69,18 @@ describe('ProgrammaticToolCalling', () => {
       expect(description).toContain('`/tmp` never survives the call');
       expect(schema.properties.tool_manifest.uniqueItems).toBe(true);
     });
+  });
+
+  it('strips attached-workspace artifact summaries before output reuse', () => {
+    const output = appendExecutionArtifactFileSummary('done', [
+      {
+        id: 'artifact-1',
+        name: 'report.txt',
+        storage_session_id: 'session-1',
+      },
+    ]);
+
+    expect(stripCodeSessionFileSummary(output)).toBe('done');
   });
 
   describe('normalizeBashToolResultsForReplay', () => {
@@ -186,7 +202,7 @@ describe('ProgrammaticToolCalling', () => {
     it('parses ClickHouse-style JSON strings with SQL punctuation for object-schema tools', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<unknown>
-          >(async (input) => input);
+      >(async (input) => input);
       const customTool = {
         name: 'run_select_query_mcp_ClickHouse',
         schema: {
@@ -206,8 +222,8 @@ describe('ProgrammaticToolCalling', () => {
         serviceId: '45886e06-932b-4cff-bb49-3f7281d80717',
         query:
           'SELECT name, round(avg(tempAvg)/10.0, 2) AS avg_temp_c ' +
-          'FROM system.columns WHERE database=\'default\' ' +
-          'AND table=\'uk_prices_3\' AND tempAvg != -9999',
+          "FROM system.columns WHERE database='default' " +
+          "AND table='uk_prices_3' AND tempAvg != -9999",
       };
       const toolCalls: t.PTCToolCall[] = [
         {
@@ -229,7 +245,7 @@ describe('ProgrammaticToolCalling', () => {
     it('preserves JSON-looking strings for string-input tools', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<unknown>
-          >(async (input) => input);
+      >(async (input) => input);
       const customTool = {
         name: 'string_tool',
         schema: { type: 'string' },
@@ -256,7 +272,7 @@ describe('ProgrammaticToolCalling', () => {
     it('preserves ClickHouse-style JSON strings for raw string-input tools', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<unknown>
-          >(async (input) => input);
+      >(async (input) => input);
       const customTool = {
         name: 'string_tool',
         schema: { type: 'string' },
@@ -267,7 +283,7 @@ describe('ProgrammaticToolCalling', () => {
         serviceId: '45886e06-932b-4cff-bb49-3f7281d80717',
         query:
           'SELECT round(avg(tempAvg)/10.0, 2) AS avg_temp_c ' +
-          'FROM default.weather_noaa_mt WHERE database=\'default\'',
+          "FROM default.weather_noaa_mt WHERE database='default'",
       });
       const toolCalls: t.PTCToolCall[] = [
         {
@@ -289,7 +305,7 @@ describe('ProgrammaticToolCalling', () => {
     it('stringifies object inputs before invoking string-input tools', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<unknown>
-          >(async (input) => input);
+      >(async (input) => input);
       const customTool = {
         name: 'string_tool',
         schema: { type: 'string' },
@@ -316,7 +332,7 @@ describe('ProgrammaticToolCalling', () => {
     it('preserves object inputs for mixed object-or-string schemas', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<unknown>
-          >(async (input) => input);
+      >(async (input) => input);
       const customTool = {
         name: 'mixed_tool',
         schema: { type: ['object', 'string'] },
@@ -344,7 +360,7 @@ describe('ProgrammaticToolCalling', () => {
     it('preserves JSON-looking strings for mixed object-or-string schemas', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<unknown>
-          >(async (input) => input);
+      >(async (input) => input);
       const customTool = {
         name: 'mixed_tool',
         schema: { type: ['object', 'string'] },
@@ -371,7 +387,7 @@ describe('ProgrammaticToolCalling', () => {
     it('marks bash PTC inner tool invocations with bash metadata', async () => {
       const invoke = jest.fn<
         (_input: unknown, _config: unknown) => Promise<{ ok: boolean }>
-          >(async () => ({ ok: true }));
+      >(async () => ({ ok: true }));
       const customTool = {
         name: 'custom_tool',
         invoke,
@@ -668,10 +684,10 @@ describe('ProgrammaticToolCalling', () => {
       it('handles real-world MCP no data response', () => {
         const result = {
           type: 'text',
-          text: 'No data found in range \'raw_data!A1:D25\' for user@example.com.',
+          text: "No data found in range 'raw_data!A1:D25' for user@example.com.",
         };
         expect(unwrapToolResponse(result, true)).toBe(
-          'No data found in range \'raw_data!A1:D25\' for user@example.com.'
+          "No data found in range 'raw_data!A1:D25' for user@example.com."
         );
       });
     });
@@ -1019,7 +1035,7 @@ for member in team:
       const [output] = formatCompletedResponse(response);
 
       expect(output).toContain(
-        'stdout: Empty. Ensure you\'re writing output explicitly'
+        "stdout: Empty. Ensure you're writing output explicitly"
       );
     });
 

@@ -15,6 +15,8 @@ const IMAGE_FILE_EXTENSIONS = new Set([
 
 const CODE_SESSION_FILE_SUMMARY_PATTERN =
   /^Generated files:\nSession files: \d+ persisted file\(s\) are available in \/mnt\/data, including \d+ image\(s\)\. Use known \/mnt\/data paths directly in later code-tool calls\. The app displays files\/images automatically; do not invent download links or wrap generated images in Markdown\.$/;
+const EXECUTION_ARTIFACT_FILE_SUMMARY_PATTERN =
+  /^Generated files:\nExecution artifacts: \d+ file\(s\), including \d+ image\(s\), were delivered to the app\. They are not retained in the attached project; write durable files to the project root when later commands must reuse them\. The app displays files\/images automatically; do not invent download links or wrap generated images in Markdown\.$/;
 
 function getFileExtension(name: string): string {
   const lastSlash = name.lastIndexOf('/');
@@ -53,7 +55,12 @@ export function stripCodeSessionFileSummary(output: string): string {
   const beforeSummary = output.slice(0, summaryStart);
   if (beforeSummary !== '' && !beforeSummary.endsWith('\n\n')) return output;
   const maybeSummary = output.slice(summaryStart);
-  if (!CODE_SESSION_FILE_SUMMARY_PATTERN.test(maybeSummary)) return output;
+  if (
+    !CODE_SESSION_FILE_SUMMARY_PATTERN.test(maybeSummary) &&
+    !EXECUTION_ARTIFACT_FILE_SUMMARY_PATTERN.test(maybeSummary)
+  ) {
+    return output;
+  }
   return beforeSummary.trimEnd();
 }
 

@@ -5,6 +5,7 @@ import type { ProgrammaticToolCallingJsonSchema } from './ptcTimeout';
 import type * as t from '@/types';
 import {
   BASH_SHELL_GUIDANCE,
+  CODE_ARTIFACT_PATH_GUIDANCE,
   appendFailedExecutionFileReminder,
   buildCodeApiExecutionErrorMessage,
   buildCodeApiEndpoint,
@@ -45,9 +46,9 @@ const DEFAULT_MAX_ROUND_TRIPS = 20;
 const DEFAULT_RUN_TIMEOUT_MS = resolveCodeApiRunTimeoutMs();
 const BASH_LAST_BACKGROUND_PID_GUARD = ': &\nwait "$!"';
 const CODE_API_WORKSPACE_HEADER = 'X-LibreChat-Code-Workspace-ID';
-const BASH_DATA_DIRECTORY = '"${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}"';
-const BASH_ARTIFACT_PATH_GUIDANCE =
-  `Use ${BASH_DATA_DIRECTORY} for injected files and generated artifacts. ` +
+const ATTACHED_BASH_DATA_DIRECTORY = '"${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}"';
+const ATTACHED_BASH_ARTIFACT_PATH_GUIDANCE =
+  `Use ${ATTACHED_BASH_DATA_DIRECTORY} for injected files and generated artifacts. ` +
   'The directory is execution-scoped; the selected workspace is the persistent project root.';
 
 /** Bash reserved words that get `_tool` suffix when used as function names */
@@ -95,10 +96,10 @@ const CORE_RULES = `Rules:
 - One call: state does not persist
 - Tools are pre-defined as bash functions—DO NOT redefine them
 - Each tool function accepts a JSON string argument
-- Set data_dir=${BASH_DATA_DIRECTORY}; save tool output with raw=$(tool '{}'); printf '%s\n' "$raw" > "$data_dir/file.json"; direct tool > file may be empty
+- Save tool output with raw=$(tool '{}'); printf '%s\n' "$raw" > /mnt/data/file.json; direct tool > file may be empty
 - Tool stdout is normalized to one compact JSON value when possible; parse saved stdout once, then use fromjson? // . only for JSON-string fields
 - Only echo/printf output returns to the model
-- ${BASH_ARTIFACT_PATH_GUIDANCE}
+- ${CODE_ARTIFACT_PATH_GUIDANCE}
 - ${BASH_SHELL_GUIDANCE}
 - timeout caps one sandbox run/replay iteration, not the total multi-round-trip workflow`;
 
@@ -111,7 +112,30 @@ const EXAMPLES = `Example (Complete workflow in one call):
   echo "$data" | jq '.[] | .name'
 
 Example (Parallel calls):
-  data_dir=${BASH_DATA_DIRECTORY}
+  { sf=$(web_search '{"query": "SF weather"}'); printf '%s\n' "$sf" > /mnt/data/sf.json; } &
+  { ny=$(web_search '{"query": "NY weather"}'); printf '%s\n' "$ny" > /mnt/data/ny.json; } &
+  wait
+  echo "SF: $(jq -r . /mnt/data/sf.json)"
+  echo "NY: $(jq -r . /mnt/data/ny.json)"`;
+
+const ATTACHED_CORE_RULES = `Rules:
+- One call: process state does not persist; project files do
+- Tools are pre-defined as bash functions—DO NOT redefine them
+- Each tool function accepts a JSON string argument
+- Resolve tool calls into variables before changing project files; do not redirect a tool call directly into the project
+- Set data_dir=${ATTACHED_BASH_DATA_DIRECTORY}; save generated artifacts there, and write durable project files relative to the working directory
+- Tool stdout is normalized to one compact JSON value when possible; parse saved stdout once, then use fromjson? // . only for JSON-string fields
+- Only echo/printf output returns to the model
+- ${ATTACHED_BASH_ARTIFACT_PATH_GUIDANCE}
+- ${BASH_SHELL_GUIDANCE}
+- timeout caps one sandbox run/replay iteration, not the total multi-round-trip workflow`;
+
+const ATTACHED_EXAMPLES = `Example (Complete workflow in one call):
+  data=$(query_database '{"sql": "SELECT * FROM users"}')
+  echo "$data" | jq '.[] | .name'
+
+Example (Parallel calls):
+  data_dir=${ATTACHED_BASH_DATA_DIRECTORY}
   { sf=$(web_search '{"query": "SF weather"}'); printf '%s\n' "$sf" > "$data_dir/sf.json"; } &
   { ny=$(web_search '{"query": "NY weather"}'); printf '%s\n' "$ny" > "$data_dir/ny.json"; } &
   wait
@@ -186,7 +210,7 @@ export const BashProgrammaticToolCallingDefinition = {
   schema: BashProgrammaticToolCallingSchema,
 } as const;
 
-function prepareBashProgrammaticCode(code: string): string {
+export function prepareBashProgrammaticCode(code: string): string {
   /* The Code API's generated Bash wrapper reads `$!` after user code. A user
    * `set -u` makes that expansion fail when no background process has run.
    * Seed and reap a no-op job before user code so strict mode remains active
@@ -347,21 +371,27 @@ export function createBashProgrammaticToolCallingTool(
   }
   const requestAuthHeaders: t.CodeApiAuthHeaders = hasWorkspace
     ? async (): Promise<t.CodeApiAuthHeaderMap> => ({
-      ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
-      [CODE_API_WORKSPACE_HEADER]: workspaceId,
-    })
+        ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
+        [CODE_API_WORKSPACE_HEADER]: workspaceId,
+      })
     : (initParams.authHeaders ?? {});
   const EXEC_ENDPOINT = buildCodeApiEndpoint(baseUrl, 'exec/programmatic');
   const description = hasWorkspace
     ? BashProgrammaticToolCallingDescription.replace(
-      STATELESS_WARNING,
-      ATTACHED_WORKSPACE_WARNING
-    )
+        STATELESS_WARNING,
+        ATTACHED_WORKSPACE_WARNING
+      )
+        .replace(CORE_RULES, ATTACHED_CORE_RULES)
+        .replace(EXAMPLES, ATTACHED_EXAMPLES)
     : BashProgrammaticToolCallingDescription;
   const schema = createBashProgrammaticToolCallingSchema(maxRunTimeoutMs);
   if (hasWorkspace) {
-    schema.properties.code.description =
-      CODE_PARAM_DESCRIPTION.replace(STATELESS_WARNING, ATTACHED_WORKSPACE_WARNING);
+    schema.properties.code.description = CODE_PARAM_DESCRIPTION.replace(
+      STATELESS_WARNING,
+      ATTACHED_WORKSPACE_WARNING
+    )
+      .replace(CORE_RULES, ATTACHED_CORE_RULES)
+      .replace(EXAMPLES, ATTACHED_EXAMPLES);
   }
 
   return tool(
