@@ -29,6 +29,22 @@ const MAX_TOKEN_VALUES = new Set([
 ]);
 const LENGTH_VALUES = new Set(['length']);
 
+/** Anthropic reports this on a successful, partial response, not an HTTP error. */
+export function hasContextWindowExceeded(
+  message:
+    | Pick<BaseMessage, 'response_metadata' | 'additional_kwargs'>
+    | undefined
+): boolean {
+  const additional = message?.additional_kwargs as
+    | { stop_reason?: string }
+    | undefined;
+  const metadata = message?.response_metadata as typeof additional;
+  return (
+    metadata?.stop_reason === 'model_context_window_exceeded' ||
+    additional?.stop_reason === 'model_context_window_exceeded'
+  );
+}
+
 function normalizeStopValue(value: unknown): TruncationStopReason | null {
   if (typeof value !== 'string') {
     return null;

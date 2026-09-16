@@ -1203,12 +1203,18 @@ describe('CustomAnthropic._streamChatModelEvents (inherited native)', () => {
       );
     });
 
-    test('maps model context exhaustion to a length finish reason', async () => {
+    test('preserves context exhaustion alongside the normalized length reason', async () => {
       const model = new MockStreamChatAnthropic(contextWindowExceededEvents());
       const events = await collectEvents(model);
 
       expect(events.find((event) => event.event === 'message-finish')).toEqual(
-        expect.objectContaining({ reason: 'length' })
+        expect.objectContaining({
+          reason: 'length',
+          responseMetadata: {
+            model_provider: 'anthropic',
+            stop_reason: 'model_context_window_exceeded',
+          },
+        })
       );
     });
 

@@ -130,7 +130,10 @@ export async function* convertAnthropicStream(
         event: 'message-finish' as const,
         reason: mapStopReason(stopReason),
         ...(usageSnapshot ? { usage: usageSnapshot } : {}),
-        responseMetadata: { model_provider: 'anthropic' },
+        responseMetadata: {
+          model_provider: 'anthropic',
+          stop_reason: stopReason,
+        },
       };
       yield finishEvent;
       break;
