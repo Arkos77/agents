@@ -1257,6 +1257,7 @@ export class Run<_T extends t.BaseGraphState> {
     }
 
     /**
+     * A context-stop continuation reserves one extra superstep.
      * Every honored seal costs one extra superstep, so a preemption-enabled
      * run reserves headroom for its whole seal budget. Without it, a
      * tool-heavy agent that gets preempted could hit `GraphRecursionError` —
@@ -1266,6 +1267,7 @@ export class Run<_T extends t.BaseGraphState> {
      */
     const recursionLimit =
       (callerConfig.recursionLimit ?? DEFAULT_RECURSION_LIMIT) +
+      1 +
       (this.preemption != null ? resolveMaxSeals(this.preemption.maxSeals) : 0);
 
     const config: t.RunStreamConfig = {

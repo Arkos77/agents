@@ -136,9 +136,7 @@ function redactCompactionSemanticIndexValue(
 
 function redactCompactionSemanticIndexInput(span: MutableSpan): void {
   const entryCount =
-    span.attributes[
-      OBSERVATION_METADATA_COMPACTION_SEMANTIC_INDEX_ENTRIES
-    ];
+    span.attributes[OBSERVATION_METADATA_COMPACTION_SEMANTIC_INDEX_ENTRIES];
   const numericEntryCount = Number(entryCount);
   if (!Number.isFinite(numericEntryCount) || numericEntryCount <= 0) {
     return;
@@ -240,6 +238,28 @@ function findLastMessageText(value: unknown, role: string): string | undefined {
     }
     const text = getMessageText(messages[i]);
     if (text != null && text.trim() !== '') {
+      if (role === 'assistant') {
+        for (let j = i - 1; j > 0; j--) {
+          if (getMessageRole(messages[j]) !== 'user') {
+            continue;
+          }
+          const message = messages[j];
+          const fields = isRecord(message.kwargs) ? message.kwargs : message;
+          if (
+            isRecord(fields.additional_kwargs) &&
+            fields.additional_kwargs.contextStopContinuation === true &&
+            getMessageRole(messages[j - 1]) === 'assistant'
+          ) {
+            return messages
+              .slice(j - 1, i + 1)
+              .filter((segment) => getMessageRole(segment) === 'assistant')
+              .map((segment) => getMessageText(segment) ?? '')
+              .filter((segment) => segment !== '')
+              .join('\n\n');
+          }
+          break;
+        }
+      }
       return text;
     }
   }

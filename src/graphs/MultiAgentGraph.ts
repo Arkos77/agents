@@ -28,12 +28,12 @@ import {
   setProviderMessageProvenance,
   stampSyntheticProviderMessage,
 } from '@/messages/provenance';
-import { serializeToolContentBounded } from '@/utils/toolContent';
-import { Constants, MULTI_AGENT_GRAPH_RUN_NAME } from '@/common';
 import {
   calculateMaxToolResultChars,
   HARD_MAX_TOOL_RESULT_CHARS,
 } from '@/utils/truncation';
+import { serializeToolContentBounded } from '@/utils/toolContent';
+import { Constants, MULTI_AGENT_GRAPH_RUN_NAME } from '@/common';
 import { StandardGraph } from './Graph';
 
 /** Pattern to extract instructions from transfer ToolMessage content */
@@ -1353,7 +1353,7 @@ export class MultiAgentGraph extends StandardGraph {
         const recursionLimitedConfig =
           this.memberRecursionLimit == null
             ? config
-            : { ...config, recursionLimit: this.memberRecursionLimit };
+            : { ...config, recursionLimit: this.memberRecursionLimit + 1 };
         const memberConfig = withActiveAgentMetadata(
           recursionLimitedConfig,
           agentId,
@@ -1582,7 +1582,9 @@ export class MultiAgentGraph extends StandardGraph {
     }
 
     const startingNodes =
-      summarizeOnlyAgentId != null ? [summarizeOnlyAgentId] : this.startingNodes;
+      summarizeOnlyAgentId != null
+        ? [summarizeOnlyAgentId]
+        : this.startingNodes;
     for (const startNode of startingNodes) {
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       /** @ts-ignore */
@@ -1634,7 +1636,10 @@ export class MultiAgentGraph extends StandardGraph {
             this.resolveMaxRoutingPromptChars(destination);
 
           if (typeof prompt === 'function') {
-            const resolvedPrompt = await prompt(state.messages, this.startIndex);
+            const resolvedPrompt = await prompt(
+              state.messages,
+              this.startIndex
+            );
             promptText =
               resolvedPrompt == null
                 ? undefined

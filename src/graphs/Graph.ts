@@ -5035,7 +5035,10 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
               new HumanMessage({
                 content:
                   'Continue from where you stopped, without repeating the previous response. Use the results already available.',
-                additional_kwargs: { isMeta: true },
+                additional_kwargs: {
+                  isMeta: true,
+                  contextStopContinuation: true,
+                },
               })
             ),
           ],

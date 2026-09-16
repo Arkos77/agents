@@ -3,6 +3,7 @@ import { AIMessageChunk, HumanMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
 import type * as t from '@/types';
 import { hasContextWindowExceeded } from '@/llm/truncation';
+import { MultiAgentGraph } from '@/graphs/MultiAgentGraph';
 import { FakeChatModel } from '@/llm/fake';
 import { Providers } from '@/common';
 import { Run } from '@/run';
@@ -154,6 +155,43 @@ describe('context-window stop continuation', () => {
     expect(run.getOutputTruncated()).toBe(true);
     expect(run.getHaltReason()).toBe('output_truncated');
   });
+
+  it.each([false, true])(
+    'reserves one continuation step (member=%s)',
+    async (member) => {
+      const model = new ContextStopModel();
+      if (member) {
+        const graph = new MultiAgentGraph({
+          runId: 'context-stop-member',
+          agents: [
+            {
+              agentId: 'member',
+              provider: Providers.ANTHROPIC,
+              clientOptions: { model: 'claude-sonnet-4-5', apiKey: 'test' },
+            },
+          ],
+          edges: [],
+          memberRecursionLimit: 2,
+        });
+        graph.overrideModel = model;
+        await graph
+          .createWorkflow()
+          .invoke({ messages: [new HumanMessage('Search')] }, config);
+        expect(model.requests).toHaveLength(2);
+        return;
+      }
+      const run = await createRun(model);
+      await run.processStream(
+        { messages: [new HumanMessage('Search')] },
+        {
+          ...config,
+          recursionLimit: 2,
+        }
+      );
+      expect(model.requests).toHaveLength(2);
+      expect(run.getHaltReason()).toBeUndefined();
+    }
+  );
 
   it('resets the continuation allowance for a new invocation on the same run', async () => {
     const model = new ContextStopModel();

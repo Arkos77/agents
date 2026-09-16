@@ -780,6 +780,51 @@ describe('shapeLangfuseSpan', () => {
   });
 });
 
+describe('shapeLangfuseSpan context-stop output', () => {
+  it.each([false, true])(
+    'preserves both segments (serialized=%s)',
+    (serialized) => {
+      const messages = [
+        { type: 'human', content: 'Question' },
+        { type: 'ai', content: 'First segment.' },
+        {
+          type: 'human',
+          content: 'Resume',
+          additional_kwargs: { isMeta: true, contextStopContinuation: true },
+        },
+        { type: 'ai', content: [{ type: 'text', text: 'Second segment.' }] },
+      ];
+      const span = createSpan('LangGraph', {
+        [OUTPUT]: JSON.stringify({
+          messages: serialized
+            ? messages.map((kwargs) => ({ kwargs }))
+            : messages,
+        }),
+      });
+      shapeLangfuseSpan(span);
+      expect(span.attributes[OUTPUT]).toBe('First segment.\n\nSecond segment.');
+    }
+  );
+
+  it('does not join answers separated by a real user message', () => {
+    const span = createSpan('LangGraph', {
+      [OUTPUT]: JSON.stringify({
+        messages: [
+          { type: 'ai', content: 'Previous answer.' },
+          {
+            type: 'human',
+            content: 'Continue from where you stopped',
+            additional_kwargs: { isMeta: true },
+          },
+          { type: 'ai', content: 'Current answer.' },
+        ],
+      }),
+    });
+    shapeLangfuseSpan(span);
+    expect(span.attributes[OUTPUT]).toBe('Current answer.');
+  });
+});
+
 describe('shapeLangfuseSpan summarize-only output', () => {
   it('reports the manual summary as the root output when no assistant replied', () => {
     /** A summarize-only run ends with the retained tail (or nothing) in
