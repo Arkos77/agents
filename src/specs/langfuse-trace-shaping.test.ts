@@ -781,18 +781,70 @@ describe('shapeLangfuseSpan', () => {
 });
 
 describe('shapeLangfuseSpan context-stop output', () => {
+  it.each([' leading space', '\nleading newline', 'suffix'])(
+    'preserves exact continuation whitespace: %j',
+    (suffix) => {
+      const span = createSpan('LangGraph', {
+        [OUTPUT]: JSON.stringify({
+          messages: [
+            { type: 'ai', id: 'partial', content: 'prefix' },
+            {
+              type: 'human',
+              content: 'Resume',
+              additional_kwargs: { contextStopContinuation: true },
+            },
+            {
+              type: 'ai',
+              content: suffix,
+              additional_kwargs: { contextStopContinuationOf: 'partial' },
+            },
+          ],
+        }),
+      });
+      shapeLangfuseSpan(span);
+      expect(span.attributes[OUTPUT]).toBe(`prefix${suffix}`);
+    }
+  );
+
+  it('stops at an intervening assistant from another agent', () => {
+    const span = createSpan('LangGraph', {
+      [OUTPUT]: JSON.stringify({
+        messages: [
+          { type: 'ai', id: 'partial-a', content: 'Agent A partial.' },
+          {
+            type: 'human',
+            content: 'Resume',
+            additional_kwargs: { contextStopContinuation: true },
+          },
+          { type: 'ai', content: 'Agent B answer.' },
+          {
+            type: 'ai',
+            content: 'Agent A final.',
+            additional_kwargs: { contextStopContinuationOf: 'partial-a' },
+          },
+        ],
+      }),
+    });
+    shapeLangfuseSpan(span);
+    expect(span.attributes[OUTPUT]).toBe('Agent A final.');
+  });
+
   it.each([false, true])(
     'preserves both segments (serialized=%s)',
     (serialized) => {
       const messages = [
         { type: 'human', content: 'Question' },
-        { type: 'ai', content: 'First segment.' },
+        { type: 'ai', id: 'partial-a', content: 'First seg' },
         {
           type: 'human',
           content: 'Resume',
           additional_kwargs: { isMeta: true, contextStopContinuation: true },
         },
-        { type: 'ai', content: [{ type: 'text', text: 'Second segment.' }] },
+        {
+          type: 'ai',
+          content: [{ type: 'text', text: 'ment. Second segment.' }],
+          additional_kwargs: { contextStopContinuationOf: 'partial-a' },
+        },
       ];
       const span = createSpan('LangGraph', {
         [OUTPUT]: JSON.stringify({
@@ -802,7 +854,36 @@ describe('shapeLangfuseSpan context-stop output', () => {
         }),
       });
       shapeLangfuseSpan(span);
-      expect(span.attributes[OUTPUT]).toBe('First segment.\n\nSecond segment.');
+      expect(span.attributes[OUTPUT]).toBe('First segment. Second segment.');
+    }
+  );
+
+  it.each([false, true])(
+    'does not join across an agent boundary (serialized=%s)',
+    (serialized) => {
+      const messages = [
+        { type: 'ai', id: 'partial-a', content: 'Agent A partial.' },
+        {
+          type: 'human',
+          content: 'Resume',
+          additional_kwargs: { contextStopContinuation: true },
+        },
+        {
+          type: 'ai',
+          content: ' Agent A finished.',
+          additional_kwargs: { contextStopContinuationOf: 'partial-a' },
+        },
+        { type: 'ai', content: 'Agent B answer.' },
+      ];
+      const span = createSpan('LangGraph', {
+        [OUTPUT]: JSON.stringify({
+          messages: serialized
+            ? messages.map((kwargs) => ({ kwargs }))
+            : messages,
+        }),
+      });
+      shapeLangfuseSpan(span);
+      expect(span.attributes[OUTPUT]).toBe('Agent B answer.');
     }
   );
 

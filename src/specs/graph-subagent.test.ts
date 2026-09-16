@@ -211,9 +211,9 @@ describe('Graph subagent integration', () => {
       resultAgentId: 'result',
     };
     const run = await createRun(graphConfig);
-    (run.Graph as StandardGraph).setSubagentModelOverride(
-      new LoopingFakeChatModel()
-    );
+    const model = new LoopingFakeChatModel();
+    const calls = jest.spyOn(model, '_streamResponseChunks');
+    (run.Graph as StandardGraph).setSubagentModelOverride(model);
 
     const output = await getGraphSubagentTool(run).invoke(
       {
@@ -223,7 +223,9 @@ describe('Graph subagent integration', () => {
       invokeConfig
     );
 
-    expect(output).toMatch(/Subagent error: Recursion limit of 3 reached/);
+    expect(output).toMatch(/Subagent error: Recursion limit of 4 reached/);
+    expect(calls).toHaveBeenCalledTimes(2);
+    expect(output).not.toContain('escaped member turn limit');
   });
 
   it('fails closed when human-in-the-loop is enabled', async () => {

@@ -237,31 +237,53 @@ function findLastMessageText(value: unknown, role: string): string | undefined {
       continue;
     }
     const text = getMessageText(messages[i]);
-    if (text != null && text.trim() !== '') {
-      if (role === 'assistant') {
-        for (let j = i - 1; j > 0; j--) {
-          if (getMessageRole(messages[j]) !== 'user') {
-            continue;
-          }
-          const message = messages[j];
-          const fields = isRecord(message.kwargs) ? message.kwargs : message;
-          if (
-            isRecord(fields.additional_kwargs) &&
-            fields.additional_kwargs.contextStopContinuation === true &&
-            getMessageRole(messages[j - 1]) === 'assistant'
-          ) {
-            return messages
-              .slice(j - 1, i + 1)
-              .filter((segment) => getMessageRole(segment) === 'assistant')
-              .map((segment) => getMessageText(segment) ?? '')
-              .filter((segment) => segment !== '')
-              .join('\n\n');
-          }
-          break;
-        }
-      }
+    if (text == null || text.trim() === '') {
+      continue;
+    }
+    if (role !== 'assistant') {
       return text;
     }
+    const message = messages[i];
+    const fields = isRecord(message.kwargs) ? message.kwargs : message;
+    const origin = isRecord(fields.additional_kwargs)
+      ? fields.additional_kwargs.contextStopContinuationOf
+      : undefined;
+    if (typeof origin === 'string') {
+      const segments = [text];
+      for (let j = i - 1; j >= 0; j--) {
+        const previous = messages[j];
+        const previousFields = isRecord(previous.kwargs)
+          ? previous.kwargs
+          : previous;
+        const metadata = previousFields.additional_kwargs;
+        const previousRole = getMessageRole(previous);
+        if (
+          previousRole === 'user' &&
+          isRecord(metadata) &&
+          metadata.contextStopContinuation === true
+        ) {
+          continue;
+        }
+        if (previousRole === 'tool') {
+          continue;
+        }
+        if (previousRole !== 'assistant') {
+          break;
+        }
+        if (previousFields.id === origin) {
+          segments.push(getMessageText(previous) ?? '');
+          return segments.reverse().join('');
+        }
+        if (
+          !isRecord(metadata) ||
+          metadata.contextStopContinuationOf !== origin
+        ) {
+          break;
+        }
+        segments.push(getMessageText(previous) ?? '');
+      }
+    }
+    return text;
   }
   return undefined;
 }

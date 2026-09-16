@@ -174,10 +174,23 @@ describe('context-window stop continuation', () => {
           memberRecursionLimit: 2,
         });
         graph.overrideModel = model;
-        await graph
+        const output = await graph
           .createWorkflow()
           .invoke({ messages: [new HumanMessage('Search')] }, config);
         expect(model.requests).toHaveLength(2);
+        const partial = output.messages.find(
+          (message) => message.getType() === 'ai'
+        );
+        const continued = output.messages.at(-1);
+        expect(partial?.id).toBeDefined();
+        expect(continued?.additional_kwargs.contextStopContinuationOf).toBe(
+          partial?.id
+        );
+        expect(continued?.toJSON()).toMatchObject({
+          kwargs: {
+            additional_kwargs: { contextStopContinuationOf: partial?.id },
+          },
+        });
         return;
       }
       const run = await createRun(model);

@@ -1486,7 +1486,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
    */
   outputTruncatedIncomplete = false;
   /** One automatic context-stop continuation per agent per run bounds billable retries. */
-  private contextStopContinued = new Set<string>();
+  private contextStopContinued = new Map<string, string>();
   private pendingContextStopReturn = new Set<string>();
   /**
    * The agent a summarize-only run summarizes with. Set from the first agent
@@ -4792,6 +4792,13 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           responseMessage.lc_kwargs.id = responseMessage.id;
         }
         this.runProducedAiMessageIds.add(responseMessage.id);
+        const continuationOf = this.contextStopContinued.get(agentId);
+        if (continuationOf != null) {
+          responseMessage.additional_kwargs.contextStopContinuationOf =
+            continuationOf;
+          responseMessage.lc_kwargs.additional_kwargs =
+            responseMessage.additional_kwargs;
+        }
       }
       const toolCalls = (responseMessage as AIMessageChunk | undefined)
         ?.tool_calls;
@@ -5007,6 +5014,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       this.cleanupSignalListener();
       if (
         hasContextWindowExceeded(responseMessage) &&
+        responseMessage?.id != null &&
         toolsCondition(
           { messages: result.messages ?? [] },
           'tools',
@@ -5017,7 +5025,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
         config.signal?.aborted !== true &&
         this.signal?.aborted !== true
       ) {
-        this.contextStopContinued.add(agentId);
+        this.contextStopContinued.set(agentId, responseMessage.id);
         this.pendingContextStopReturn.add(agentId);
         emitAgentLog(
           config,
