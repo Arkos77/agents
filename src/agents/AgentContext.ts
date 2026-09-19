@@ -939,8 +939,18 @@ export class AgentContext {
     }
 
     const promptCacheProvider = this.getPromptCacheProvider();
+    /**
+     * GPT-5.6 explicit caching needs the same structural split as Anthropic —
+     * a stable system message with the volatile tail moved behind it — but
+     * none of the Anthropic marker stamping: its breakpoints are attached to
+     * the serialized request later, in the OpenAI client. So it drives the
+     * relocation flag while leaving `promptCacheProvider` undefined.
+     */
+    const openAIExplicitCache = this.usesOpenAIExplicitPromptCache();
+    const splitsDynamicInstructions =
+      promptCacheProvider != null || openAIExplicitCache;
     const shouldMoveDynamicInstructions =
-      promptCacheProvider != null &&
+      splitsDynamicInstructions &&
       stableInstructions !== '' &&
       dynamicInstructions !== '';
     const systemMessage = this.buildSystemMessage({
@@ -971,14 +981,16 @@ export class AgentContext {
         this.summaryText !== '';
 
       const bodyWithSummary =
-        hasSummaryBody && promptCacheProvider == null
+        hasSummaryBody && !splitsDynamicInstructions
           ? [this.buildSummaryHumanMessage(promptCacheProvider), ...messages]
           : messages;
       const dynamicTail = this.buildPromptCacheDynamicTail({
         dynamicInstructions,
         hasSummaryBody,
-        promptCacheProvider,
+        splitsDynamicInstructions,
         shouldMoveDynamicInstructions,
+        keepsInstructionRole:
+          openAIExplicitCache && promptCacheProvider == null,
       });
       let body = this.buildBodyWithPromptCacheDynamicTail(
         bodyWithSummary,
@@ -1025,20 +1037,35 @@ export class AgentContext {
   private buildPromptCacheDynamicTail({
     dynamicInstructions,
     hasSummaryBody,
-    promptCacheProvider,
+    splitsDynamicInstructions,
     shouldMoveDynamicInstructions,
+    keepsInstructionRole,
   }: {
     dynamicInstructions: string;
     hasSummaryBody: boolean;
-    promptCacheProvider: PromptCacheProvider | undefined;
+    splitsDynamicInstructions: boolean;
     shouldMoveDynamicInstructions: boolean;
+    keepsInstructionRole: boolean;
   }): BaseMessage[] {
-    if (promptCacheProvider == null) {
+    if (!splitsDynamicInstructions) {
       return [];
     }
 
+    /**
+     * The tail keeps its role where relocating it is this library's own idea.
+     * `additional_instructions` is declared a system tail and carries host
+     * constraints and cross-run summary context; on OpenAI and Azure a user
+     * message ranks below a system one, so emitting it as a `HumanMessage`
+     * would let later user content override those constraints, changing how
+     * an agent behaves because caching was switched on. Anthropic and
+     * OpenRouter keep the `HumanMessage` they already shipped with.
+     */
     const dynamicTail = shouldMoveDynamicInstructions
-      ? [new HumanMessage(dynamicInstructions)]
+      ? [
+        keepsInstructionRole
+          ? new SystemMessage(dynamicInstructions)
+          : new HumanMessage(dynamicInstructions),
+      ]
       : [];
 
     if (!hasSummaryBody) {
@@ -1063,10 +1090,19 @@ export class AgentContext {
         : this.getPromptCacheDynamicTailIndex(messages, promptCacheProvider);
     const stablePrefix = messages.slice(0, tailIndex);
     const trailingMessages = messages.slice(tailIndex);
-    const cacheablePrefix = this.addStablePromptCacheMarkers(
-      stablePrefix,
-      this.getPromptCacheTtl(promptCacheProvider)
-    );
+    /**
+     * Anthropic-format markers only. On the OpenAI explicit path the prefix is
+     * left untouched: its breakpoints are attached to the serialized request,
+     * and a `cache_control` block here would be sent to a provider that has no
+     * such field.
+     */
+    const cacheablePrefix =
+      promptCacheProvider == null
+        ? stablePrefix
+        : this.addStablePromptCacheMarkers(
+          stablePrefix,
+          this.getPromptCacheTtl(promptCacheProvider)
+        );
 
     return [...cacheablePrefix, ...tail, ...trailingMessages];
   }
@@ -1131,6 +1167,29 @@ export class AgentContext {
     }
 
     return undefined;
+  }
+
+  /**
+   * GPT-5.6 explicit prompt caching, on first-party OpenAI and Azure OpenAI.
+   *
+   * Unlike the providers above this adds no marker to the message content
+   * here: `prompt_cache_breakpoint` is attached to the serialized request in
+   * the OpenAI client, which selects the last system/developer message. That
+   * selection is only worth anything if the system message stops at the
+   * stable instructions, so this exists to drive the same dynamic-tail
+   * relocation — nothing else.
+   */
+  private usesOpenAIExplicitPromptCache(): boolean {
+    if (
+      this.provider !== Providers.OPENAI &&
+      this.provider !== Providers.AZURE
+    ) {
+      return false;
+    }
+    const openAIOptions = this.clientOptions as
+      | { promptCacheExplicit?: boolean }
+      | undefined;
+    return openAIOptions?.promptCacheExplicit === true;
   }
 
   private hasBedrockPromptCache(): boolean {
@@ -1238,8 +1297,16 @@ export class AgentContext {
       return new SystemMessage({ content } as BaseMessageFields);
     }
 
+    /**
+     * A relocated tail must not also appear here. On the GPT-5.6 explicit path
+     * this is what leaves the system message holding only the stable prefix,
+     * which is where the client then places the breakpoint.
+     */
     return new SystemMessage(
-      [stableInstructions, dynamicInstructions]
+      [
+        stableInstructions,
+        shouldMoveDynamicInstructions ? '' : dynamicInstructions,
+      ]
         .filter((part) => part !== '')
         .join('\n\n')
     );
