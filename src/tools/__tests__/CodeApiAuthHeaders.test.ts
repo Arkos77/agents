@@ -638,6 +638,22 @@ describe('CodeAPI auth header injection', () => {
     ).toThrow('Invalid attached workspace instance identifier');
   });
 
+  it.each(['', '   '])(
+    'treats a blank direct Bash workspace instance as absent: %j',
+    async (workspaceInstanceId) => {
+      fetchMock.mockResolvedValueOnce(completedResponse('done'));
+      const tool = createBashExecutionTool({
+        baseUrl: 'https://code.example.com/v1',
+        workspaceId: 'project-a',
+        workspaceInstanceId,
+      });
+
+      await tool.invoke({ command: 'pwd' });
+
+      expect(requestBodyAt(0)).not.toHaveProperty('workspace_instance_id');
+    }
+  );
+
   it('surfaces a selected-workspace execution error instead of formatting success', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -1570,6 +1586,32 @@ describe('CodeAPI auth header injection', () => {
       })
     ).toThrow('Invalid attached workspace instance identifier');
   });
+
+  it.each(['', '   '])(
+    'treats a blank programmatic workspace instance as absent: %j',
+    async (workspaceInstanceId) => {
+      fetchMock.mockResolvedValueOnce(completedResponse('done'));
+      const tool = createBashProgrammaticToolCallingTool({
+        baseUrl: 'https://code.example.com',
+        workspaceId: 'project-a',
+        workspaceInstanceId,
+      });
+
+      await tool.invoke(
+        { code: 'pwd', tool_manifest: [] },
+        {
+          toolCall: {
+            name: 'bash_programmatic_code_execution',
+            args: {},
+            toolMap: new Map(),
+            toolDefs: [],
+          },
+        }
+      );
+
+      expect(requestBodyAt(0)).not.toHaveProperty('workspace_instance_id');
+    }
+  );
 
   it('keeps tool-free attached bash execution on the programmatic workspace path', async () => {
     fetchMock.mockResolvedValueOnce(completedResponse('done'));

@@ -25,6 +25,7 @@ import {
 } from '@/tools/ArtifactDelivery';
 import { logCodeApiDiagnostic } from '@/tools/diagnostics';
 import { appendExecutionArtifactFileSummary } from '@/tools/CodeSessionFileSummary';
+import { resolveAttachedWorkspaceInstanceId } from '@/tools/workspaceIdentity';
 import { resolveFetchProxyAgent } from '@/utils/proxy';
 import { INTENT_PROPERTY } from '@/tools/intentArg';
 import { Constants } from '@/common';
@@ -225,18 +226,15 @@ function createBashExecutionTool(
 ): DynamicStructuredTool {
   const workspaceId = params?.workspaceId?.trim();
   const hasWorkspace = workspaceId != null && workspaceId !== '';
-  const workspaceInstanceId = params?.workspaceInstanceId?.trim();
+  const workspaceInstanceId = resolveAttachedWorkspaceInstanceId(
+    params?.workspaceInstanceId,
+    hasWorkspace
+  );
   if (
     hasWorkspace &&
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workspaceId)
   ) {
     throw new Error('Invalid attached workspace identifier');
-  }
-  if (
-    workspaceInstanceId !== undefined &&
-    (!hasWorkspace || !/^[a-f0-9]{64}$/.test(workspaceInstanceId))
-  ) {
-    throw new Error('Invalid attached workspace instance identifier');
   }
   const execEndpoint = buildCodeApiEndpoint(
     params?.baseUrl ?? getCodeBaseURL(),

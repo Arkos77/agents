@@ -33,6 +33,7 @@ import {
   formatCompletedResponse,
 } from './ProgrammaticToolCalling';
 import { logCodeApiDiagnostic } from '@/tools/diagnostics';
+import { resolveAttachedWorkspaceInstanceId } from '@/tools/workspaceIdentity';
 import { INTENT_PROPERTY } from '@/tools/intentArg';
 import { Constants } from '@/common';
 
@@ -369,14 +370,10 @@ export function createBashProgrammaticToolCallingTool(
   ) {
     throw new Error('Invalid attached workspace identifier');
   }
-  const workspaceInstanceId = initParams.workspaceInstanceId?.trim();
-  if (
-    workspaceInstanceId != null &&
-    workspaceInstanceId !== '' &&
-    (!hasWorkspace || !/^[a-f0-9]{64}$/.test(workspaceInstanceId))
-  ) {
-    throw new Error('Invalid attached workspace instance identifier');
-  }
+  const workspaceInstanceId = resolveAttachedWorkspaceInstanceId(
+    initParams.workspaceInstanceId,
+    hasWorkspace
+  );
   const requestAuthHeaders: t.CodeApiAuthHeaders = hasWorkspace
     ? async (): Promise<t.CodeApiAuthHeaderMap> => ({
       ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
@@ -546,7 +543,7 @@ export function createBashProgrammaticToolCallingTool(
             tools: effectiveTools,
             session_id,
             timeout,
-            ...(workspaceInstanceId
+            ...(workspaceInstanceId != null && workspaceInstanceId !== ''
               ? { workspace_instance_id: workspaceInstanceId }
               : {}),
             ...(files && files.length > 0 ? { files } : {}),
