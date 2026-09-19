@@ -225,11 +225,18 @@ function createBashExecutionTool(
 ): DynamicStructuredTool {
   const workspaceId = params?.workspaceId?.trim();
   const hasWorkspace = workspaceId != null && workspaceId !== '';
+  const workspaceInstanceId = params?.workspaceInstanceId?.trim();
   if (
     hasWorkspace &&
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workspaceId)
   ) {
     throw new Error('Invalid attached workspace identifier');
+  }
+  if (
+    workspaceInstanceId !== undefined &&
+    (!hasWorkspace || !/^[a-f0-9]{64}$/.test(workspaceInstanceId))
+  ) {
+    throw new Error('Invalid attached workspace instance identifier');
   }
   const execEndpoint = buildCodeApiEndpoint(
     params?.baseUrl ?? getCodeBaseURL(),
@@ -247,10 +254,12 @@ function createBashExecutionTool(
         runtimeSessionHint,
         statefulSessions,
         workspaceId: _workspaceId,
+        workspaceInstanceId: _workspaceInstanceId,
         ...executionParams
       } = params ?? {};
       void _baseUrl;
       void _workspaceId;
+      void _workspaceInstanceId;
       /* Drop any model-supplied `runtime_session_hint` from the raw args: the
        * hint must only come from ToolNode's injected `_runtime_session_hint`
        * (below), never from the tool call itself. */
@@ -283,6 +292,7 @@ function createBashExecutionTool(
         lang: 'bash',
         code: hasWorkspace ? prepareBashProgrammaticCode(command) : command,
         ...(hasWorkspace ? { tools: [] } : {}),
+        ...(workspaceInstanceId ? { workspace_instance_id: workspaceInstanceId } : {}),
         ...(!hasWorkspace && args != null ? { args } : {}),
         ...rest,
         ...executionParams,

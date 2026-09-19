@@ -577,6 +577,34 @@ describe('CodeAPI auth header injection', () => {
     expect(String(requestBodyAt(0).code)).toContain(': &\nwait "$!"');
   });
 
+  it('binds direct attached Bash to a trusted workspace instance', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const workspaceInstanceId = 'b'.repeat(64);
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      workspaceId: 'project-a',
+      workspaceInstanceId,
+    });
+
+    await tool.invoke({ command: 'pwd' });
+
+    expect(requestBodyAt(0)).toMatchObject({
+      workspace_instance_id: workspaceInstanceId,
+    });
+  });
+
+  it('rejects malformed or unscoped direct Bash workspace instances', () => {
+    expect(() =>
+      createBashExecutionTool({
+        workspaceId: 'project-a',
+        workspaceInstanceId: 'not-a-sha256',
+      })
+    ).toThrow('Invalid attached workspace instance identifier');
+    expect(() =>
+      createBashExecutionTool({ workspaceInstanceId: 'b'.repeat(64) })
+    ).toThrow('Invalid attached workspace instance identifier');
+  });
+
   it('surfaces a selected-workspace execution error instead of formatting success', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
