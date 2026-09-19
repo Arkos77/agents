@@ -593,6 +593,39 @@ describe('CodeAPI auth header injection', () => {
     });
   });
 
+  it('does not let raw Bash arguments override a trusted workspace instance', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const workspaceInstanceId = 'b'.repeat(64);
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+      workspaceId: 'project-a',
+      workspaceInstanceId,
+    });
+
+    await tool.invoke({
+      command: 'pwd',
+      workspace_instance_id: 'a'.repeat(64),
+    });
+
+    expect(requestBodyAt(0)).toMatchObject({
+      workspace_instance_id: workspaceInstanceId,
+    });
+  });
+
+  it('drops raw workspace instances when direct Bash has no trusted binding', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const tool = createBashExecutionTool({
+      baseUrl: 'https://code.example.com/v1',
+    });
+
+    await tool.invoke({
+      command: 'pwd',
+      workspace_instance_id: 'a'.repeat(64),
+    });
+
+    expect(requestBodyAt(0)).not.toHaveProperty('workspace_instance_id');
+  });
+
   it('rejects malformed or unscoped direct Bash workspace instances', () => {
     expect(() =>
       createBashExecutionTool({

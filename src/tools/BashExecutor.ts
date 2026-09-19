@@ -268,15 +268,18 @@ function createBashExecutionTool(
         command: rawCommand,
         intent: _ignoredIntent,
         runtime_session_hint: _ignoredModelHint,
+        workspace_instance_id: _ignoredModelWorkspaceInstanceId,
         args,
         ...rest
       } = rawInput as {
         command: string;
         intent?: unknown;
         runtime_session_hint?: unknown;
+        workspace_instance_id?: unknown;
         args?: string[];
       };
       void _ignoredModelHint;
+      void _ignoredModelWorkspaceInstanceId;
       void _ignoredIntent;
       const command = hasWorkspace
         ? commandWithArguments(rawCommand, args)
@@ -292,10 +295,12 @@ function createBashExecutionTool(
         lang: 'bash',
         code: hasWorkspace ? prepareBashProgrammaticCode(command) : command,
         ...(hasWorkspace ? { tools: [] } : {}),
-        ...(workspaceInstanceId ? { workspace_instance_id: workspaceInstanceId } : {}),
         ...(!hasWorkspace && args != null ? { args } : {}),
         ...rest,
         ...executionParams,
+        ...(workspaceInstanceId != null && workspaceInstanceId !== ''
+          ? { workspace_instance_id: workspaceInstanceId }
+          : {}),
       };
 
       const effectiveRuntimeSessionHint = selectRuntimeSessionHint(
