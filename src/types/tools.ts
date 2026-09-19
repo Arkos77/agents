@@ -1388,6 +1388,8 @@ export type BashProgrammaticToolCallingParams =
   ProgrammaticToolCallingParams & {
     /** Trusted attached-workspace identifier selected by the host. */
     workspaceId?: string;
+    /** Trusted conversation-owned workspace instance selected by the host. */
+    workspaceInstanceId?: string;
   };
 
 /**

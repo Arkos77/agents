@@ -1470,6 +1470,46 @@ describe('CodeAPI auth header injection', () => {
     }
   });
 
+  it('binds the initial programmatic request to a trusted workspace instance', async () => {
+    fetchMock.mockResolvedValueOnce(completedResponse('done'));
+    const workspaceInstanceId = 'a'.repeat(64);
+    const tool = createBashProgrammaticToolCallingTool({
+      baseUrl: 'https://code.example.com',
+      workspaceId: 'project-a',
+      workspaceInstanceId,
+    });
+
+    await tool.invoke(
+      { code: 'pwd', tool_manifest: [] },
+      {
+        toolCall: {
+          name: 'bash_programmatic_code_execution',
+          args: {},
+          toolMap: new Map(),
+          toolDefs: [],
+        },
+      }
+    );
+
+    expect(requestBodyAt(0)).toMatchObject({
+      workspace_instance_id: workspaceInstanceId,
+    });
+  });
+
+  it('rejects malformed or unscoped workspace instance identifiers', () => {
+    expect(() =>
+      createBashProgrammaticToolCallingTool({
+        workspaceId: 'project-a',
+        workspaceInstanceId: 'not-a-sha256',
+      })
+    ).toThrow('Invalid attached workspace instance identifier');
+    expect(() =>
+      createBashProgrammaticToolCallingTool({
+        workspaceInstanceId: 'a'.repeat(64),
+      })
+    ).toThrow('Invalid attached workspace instance identifier');
+  });
+
   it('keeps tool-free attached bash execution on the programmatic workspace path', async () => {
     fetchMock.mockResolvedValueOnce(completedResponse('done'));
     const tool = createBashProgrammaticToolCallingTool({

@@ -369,6 +369,14 @@ export function createBashProgrammaticToolCallingTool(
   ) {
     throw new Error('Invalid attached workspace identifier');
   }
+  const workspaceInstanceId = initParams.workspaceInstanceId?.trim();
+  if (
+    workspaceInstanceId != null &&
+    workspaceInstanceId !== '' &&
+    (!hasWorkspace || !/^[a-f0-9]{64}$/.test(workspaceInstanceId))
+  ) {
+    throw new Error('Invalid attached workspace instance identifier');
+  }
   const requestAuthHeaders: t.CodeApiAuthHeaders = hasWorkspace
     ? async (): Promise<t.CodeApiAuthHeaderMap> => ({
       ...(await resolveCodeApiAuthHeaders(initParams.authHeaders)),
@@ -538,6 +546,9 @@ export function createBashProgrammaticToolCallingTool(
             tools: effectiveTools,
             session_id,
             timeout,
+            ...(workspaceInstanceId
+              ? { workspace_instance_id: workspaceInstanceId }
+              : {}),
             ...(files && files.length > 0 ? { files } : {}),
             ...(runtimeSessionHint != null
               ? { runtime_session_hint: runtimeSessionHint }
