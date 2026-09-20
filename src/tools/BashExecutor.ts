@@ -25,6 +25,7 @@ import {
 } from '@/tools/ArtifactDelivery';
 import { logCodeApiDiagnostic } from '@/tools/diagnostics';
 import { appendExecutionArtifactFileSummary } from '@/tools/CodeSessionFileSummary';
+import { resolveAttachedWorkspaceInstanceId } from '@/tools/workspaceIdentity';
 import { resolveFetchProxyAgent } from '@/utils/proxy';
 import { INTENT_PROPERTY } from '@/tools/intentArg';
 import { Constants } from '@/common';
@@ -225,6 +226,10 @@ function createBashExecutionTool(
 ): DynamicStructuredTool {
   const workspaceId = params?.workspaceId?.trim();
   const hasWorkspace = workspaceId != null && workspaceId !== '';
+  const workspaceInstanceId = resolveAttachedWorkspaceInstanceId(
+    params?.workspaceInstanceId,
+    hasWorkspace
+  );
   if (
     hasWorkspace &&
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workspaceId)
@@ -247,10 +252,12 @@ function createBashExecutionTool(
         runtimeSessionHint,
         statefulSessions,
         workspaceId: _workspaceId,
+        workspaceInstanceId: _workspaceInstanceId,
         ...executionParams
       } = params ?? {};
       void _baseUrl;
       void _workspaceId;
+      void _workspaceInstanceId;
       /* Drop any model-supplied `runtime_session_hint` from the raw args: the
        * hint must only come from ToolNode's injected `_runtime_session_hint`
        * (below), never from the tool call itself. */
@@ -259,15 +266,18 @@ function createBashExecutionTool(
         command: rawCommand,
         intent: _ignoredIntent,
         runtime_session_hint: _ignoredModelHint,
+        workspace_instance_id: _ignoredModelWorkspaceInstanceId,
         args,
         ...rest
       } = rawInput as {
         command: string;
         intent?: unknown;
         runtime_session_hint?: unknown;
+        workspace_instance_id?: unknown;
         args?: string[];
       };
       void _ignoredModelHint;
+      void _ignoredModelWorkspaceInstanceId;
       void _ignoredIntent;
       const command = hasWorkspace
         ? commandWithArguments(rawCommand, args)
@@ -286,6 +296,9 @@ function createBashExecutionTool(
         ...(!hasWorkspace && args != null ? { args } : {}),
         ...rest,
         ...executionParams,
+        ...(workspaceInstanceId != null && workspaceInstanceId !== ''
+          ? { workspace_instance_id: workspaceInstanceId }
+          : {}),
       };
 
       const effectiveRuntimeSessionHint = selectRuntimeSessionHint(

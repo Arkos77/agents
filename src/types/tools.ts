@@ -1381,6 +1381,8 @@ export type BashExecutionToolParams =
   | (Exclude<CodeExecutionToolParams, undefined> & {
       /** Trusted attached-workspace identifier selected by the host. */
       workspaceId?: string;
+      /** Trusted conversation-owned workspace instance selected by the host. */
+      workspaceInstanceId?: string;
     });
 
 /** Parameters for creating a bash programmatic tool calling tool (same API as PTC, bash-only) */
@@ -1388,6 +1390,8 @@ export type BashProgrammaticToolCallingParams =
   ProgrammaticToolCallingParams & {
     /** Trusted attached-workspace identifier selected by the host. */
     workspaceId?: string;
+    /** Trusted conversation-owned workspace instance selected by the host. */
+    workspaceInstanceId?: string;
   };
 
 /**
