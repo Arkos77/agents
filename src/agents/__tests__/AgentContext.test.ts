@@ -246,7 +246,13 @@ describe('AgentContext', () => {
       ]);
       expect(result[1].content).toBe('Hello');
       expect(result[2].content).toBe('Dynamic instructions');
-      expect(result[3].content).toBe('Second');
+      expect(result[3].content).toEqual([
+        {
+          type: 'text',
+          text: 'Second',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('places Anthropic dynamic instructions before a single latest user prompt', async () => {
@@ -264,7 +270,13 @@ describe('AgentContext', () => {
       ]);
 
       expect(result[1].content).toBe('Dynamic instructions');
-      expect(result[2].content).toBe('Latest');
+      expect(result[2].content).toEqual([
+        {
+          type: 'text',
+          text: 'Latest',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('omits Anthropic cache control when only dynamic system text exists', async () => {
@@ -388,7 +400,13 @@ describe('AgentContext', () => {
       ]);
       expect(result[1].content).toBe('Hello');
       expect(result[2].content).toBe('Dynamic instructions');
-      expect(result[3].content).toBe('Second');
+      expect(result[3].content).toEqual([
+        {
+          type: 'text',
+          text: 'Second',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('keeps dynamic-only OpenRouter instructions as system text', async () => {
@@ -432,7 +450,7 @@ describe('AgentContext', () => {
       expect(ctx.instructionTokens).toBe(ctx.systemMessageTokens);
     });
 
-    it('does not cache OpenRouter body messages after dynamic instructions', async () => {
+    it('caches the latest OpenRouter body message after dynamic instructions', async () => {
       const ctx = createBasicContext({
         agentConfig: {
           provider: Providers.OPENROUTER,
@@ -452,7 +470,13 @@ describe('AgentContext', () => {
 
       expect(result[1].content).toBe('First');
       expect(result[2].content).toBe('Dynamic instructions');
-      expect(result[3].content).toBe('Second');
+      expect(result[3].content).toEqual([
+        {
+          type: 'text',
+          text: 'Second',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('keeps the first OpenRouter user message before single-turn dynamic instructions', async () => {
@@ -503,7 +527,13 @@ describe('AgentContext', () => {
         cache_control: { type: 'ephemeral' },
       });
       expect(result[3].content).toBe('Dynamic instructions');
-      expect(result[4].content).toBe('Latest');
+      expect(result[4].content).toEqual([
+        {
+          type: 'text',
+          text: 'Latest',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('keeps Anthropic dynamic instructions attached to the latest user turn during tool follow-up', async () => {
@@ -629,15 +659,10 @@ describe('AgentContext', () => {
         new AIMessage('4'),
         new HumanMessage('Now answer without tools'),
       ]);
-      const firstAssistant = result[2].content as TestSystemContentBlock[];
       const toolAnswer = result[6].content as TestSystemContentBlock[];
 
       expect(result[1].content).toBe('First turn, no tools');
-      expect(firstAssistant[0]).toMatchObject({
-        type: 'text',
-        text: 'First assistant response',
-        cache_control: { type: 'ephemeral' },
-      });
+      expect(result[2].content).toBe('First assistant response');
       expect(result[3].content).toBe('Use the tool');
       expect((result[4] as AIMessage).tool_calls?.[0]?.id).toBe('call_1');
       expect(result[5].getType()).toBe('tool');
@@ -647,7 +672,13 @@ describe('AgentContext', () => {
         cache_control: { type: 'ephemeral' },
       });
       expect(result[7].content).toBe('Dynamic instructions');
-      expect(result[8].content).toBe('Now answer without tools');
+      expect(result[8].content).toEqual([
+        {
+          type: 'text',
+          text: 'Now answer without tools',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('caches stable OpenRouter history before dynamic instructions', async () => {
@@ -677,7 +708,13 @@ describe('AgentContext', () => {
         cache_control: { type: 'ephemeral' },
       });
       expect(result[3].content).toBe('Dynamic instructions');
-      expect(result[4].content).toBe('Latest');
+      expect(result[4].content).toEqual([
+        {
+          type: 'text',
+          text: 'Latest',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('keeps OpenRouter opening user message before dynamic tool-follow-up context', async () => {
@@ -803,15 +840,10 @@ describe('AgentContext', () => {
         new AIMessage('4'),
         new HumanMessage('Now answer without tools'),
       ]);
-      const firstAssistant = result[2].content as TestSystemContentBlock[];
       const toolAnswer = result[6].content as TestSystemContentBlock[];
 
       expect(result[1].content).toBe('First turn, no tools');
-      expect(firstAssistant[0]).toMatchObject({
-        type: 'text',
-        text: 'First assistant response',
-        cache_control: { type: 'ephemeral' },
-      });
+      expect(result[2].content).toBe('First assistant response');
       expect(result[3].content).toBe('Use the tool');
       expect((result[4] as AIMessage).tool_calls?.[0]?.id).toBe('call_1');
       expect(result[5].getType()).toBe('tool');
@@ -821,7 +853,13 @@ describe('AgentContext', () => {
         cache_control: { type: 'ephemeral' },
       });
       expect(result[7].content).toBe('Dynamic instructions');
-      expect(result[8].content).toBe('Now answer without tools');
+      expect(result[8].content).toEqual([
+        {
+          type: 'text',
+          text: 'Now answer without tools',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it('adds a single OpenRouter body cache point on the tail when there is no dynamic tail', async () => {
@@ -865,7 +903,13 @@ describe('AgentContext', () => {
 
       expect(result[1].content).toBe('First');
       expect(result[2].content).toContain('Rotating summary');
-      expect(result[3].content).toBe('Second');
+      expect(result[3].content).toEqual([
+        {
+          type: 'text',
+          text: 'Second',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     });
 
     it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(

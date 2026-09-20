@@ -26,6 +26,7 @@ import {
 } from '@/tools/CallerCapabilities';
 import {
   addTailCacheControl,
+  stripAnthropicCacheControl,
   addCacheControlToStablePrefixMessages,
   buildAnthropicCacheControl,
   buildBedrockCachePoint,
@@ -1063,12 +1064,16 @@ export class AgentContext {
         : this.getPromptCacheDynamicTailIndex(messages, promptCacheProvider);
     const stablePrefix = messages.slice(0, tailIndex);
     const trailingMessages = messages.slice(tailIndex);
-    const cacheablePrefix = this.addStablePromptCacheMarkers(
-      stablePrefix,
-      this.getPromptCacheTtl(promptCacheProvider)
+    const ttl = this.getPromptCacheTtl(promptCacheProvider);
+    const cacheablePrefix = this.addStablePromptCacheMarkers(stablePrefix, ttl);
+    // Mark only the conversation suffix: marking the assembled body would strip
+    // the stable-prefix breakpoint and could anchor an instruction-only carrier.
+    const cacheableTrailingMessages = addTailCacheControl(
+      trailingMessages,
+      ttl
     );
 
-    return [...cacheablePrefix, ...tail, ...trailingMessages];
+    return [...cacheablePrefix, ...tail, ...cacheableTrailingMessages];
   }
 
   private getPromptCacheDynamicTailIndex(
@@ -1101,13 +1106,12 @@ export class AgentContext {
     messages: BaseMessage[],
     ttl?: PromptCacheTtl
   ): BaseMessage[] {
-    if (messages.length <= 1) {
-      return messages;
-    }
-
+    // Reserve the other three breakpoints for tools, system, and conversation tail.
+    // The opening message is not an anchor, including when it has inherited markers.
+    const openingMessage = stripAnthropicCacheControl(messages.slice(0, 1));
     return [
-      messages[0],
-      ...addCacheControlToStablePrefixMessages(messages.slice(1), 2, ttl),
+      ...openingMessage,
+      ...addCacheControlToStablePrefixMessages(messages.slice(1), 1, ttl),
     ];
   }
 
