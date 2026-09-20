@@ -159,6 +159,10 @@ import {
   PreparedSubagentError,
 } from '@/tools/preparedSubagents';
 import {
+  getTruncationStopReason,
+  hasContextWindowExceeded,
+} from '@/llm/truncation';
+import {
   createRemoveAllMessage,
   messagesStateReducer,
 } from '@/messages/reducer';
@@ -180,7 +184,6 @@ import { initializeLangfuseTracing } from '@/instrumentation';
 import { isRunStepResumeState } from '@/tools/runStepResume';
 import { resolveLocalToolsForBinding } from '@/tools/local';
 import { createSummarizeNode } from '@/summarization/node';
-import { getTruncationStopReason } from '@/llm/truncation';
 import { createSchemaOnlyTools } from '@/tools/schema';
 import { AgentContext } from '@/agents/AgentContext';
 import { createFakeStreamingLLM } from '@/llm/fake';
@@ -1482,6 +1485,9 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
    * cannot suppress an unrelated agent's turn in a multi-agent graph.
    */
   outputTruncatedIncomplete = false;
+  /** One automatic context-stop continuation per agent per run bounds billable retries. */
+  private contextStopContinued = new Map<string, string>();
+  private pendingContextStopReturn = new Set<string>();
   /**
    * The agent a summarize-only run summarizes with. Set from the first agent
    * input that opted in; while set, the model step after the summary routes
@@ -1734,6 +1740,8 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
     this.invokedToolIds = resetIfNotEmpty(this.invokedToolIds, undefined);
     this.resetPreemptTurnState();
     this.resetPreemptTotals();
+    this.contextStopContinued.clear();
+    this.pendingContextStopReturn.clear();
     const hasScopedCheckpoint =
       this.hasCompiledCheckpointer &&
       checkpointScope != null &&
@@ -4784,6 +4792,13 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           responseMessage.lc_kwargs.id = responseMessage.id;
         }
         this.runProducedAiMessageIds.add(responseMessage.id);
+        const continuationOf = this.contextStopContinued.get(agentId);
+        if (continuationOf != null) {
+          responseMessage.additional_kwargs.contextStopContinuationOf =
+            continuationOf;
+          responseMessage.lc_kwargs.additional_kwargs =
+            responseMessage.additional_kwargs;
+        }
       }
       const toolCalls = (responseMessage as AIMessageChunk | undefined)
         ?.tool_calls;
@@ -4997,6 +5012,46 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       }
 
       this.cleanupSignalListener();
+      if (
+        hasContextWindowExceeded(responseMessage) &&
+        responseMessage?.id != null &&
+        toolsCondition(
+          { messages: result.messages ?? [] },
+          'tools',
+          this.invokedToolIds
+        ) === END &&
+        !this.contextStopContinued.has(agentId) &&
+        !this.preemptIncomplete &&
+        config.signal?.aborted !== true &&
+        this.signal?.aborted !== true
+      ) {
+        this.contextStopContinued.set(agentId, responseMessage.id);
+        this.pendingContextStopReturn.add(agentId);
+        emitAgentLog(
+          config,
+          'warn',
+          'graph',
+          'Context window reached — continuing the partial response',
+          {},
+          invokeMeta
+        );
+        return {
+          ...result,
+          messages: [
+            ...(result.messages ?? []),
+            stampSyntheticProviderMessage(
+              new HumanMessage({
+                content:
+                  'Continue from where you stopped, without repeating the previous response. Use the results already available.',
+                additional_kwargs: {
+                  isMeta: true,
+                  contextStopContinuation: true,
+                },
+              })
+            ),
+          ],
+        };
+      }
       return result;
     };
   }
@@ -5455,6 +5510,9 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       if (this.pendingPreemptReturn.delete(agentId)) {
         return agentNode;
       }
+      if (this.pendingContextStopReturn.delete(agentId)) {
+        return agentNode;
+      }
       if (state.summarizationRequest != null) {
         return summarizeNode;
       }
@@ -5479,7 +5537,10 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       if (decision === END) {
         const { messages } = state as t.BaseGraphState;
         const lastMessage = messages[messages.length - 1];
-        if (getTruncationStopReason(lastMessage) != null) {
+        if (
+          getTruncationStopReason(lastMessage) != null ||
+          hasContextWindowExceeded(lastMessage)
+        ) {
           this.outputTruncatedIncomplete = true;
         }
       }
