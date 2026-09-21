@@ -1729,7 +1729,30 @@ export class SubagentExecutor {
           lineageTuple.parentConfig,
           'checkpoint_id'
         );
-        const storedConfig = await this.checkpointer.put(
+        const targetConfig = {
+          configurable: {
+            thread_id: targetThreadId,
+            checkpoint_ns: checkpointNs,
+            checkpoint_id: lineageTuple.checkpoint.id,
+            ...(parentCheckpointId == null
+              ? {}
+              : { checkpoint_id: lineageTuple.checkpoint.id }),
+          },
+        };
+        const writesByTask = new Map<string, Array<[string, unknown]>>();
+        for (const [taskId, channel, value] of lineageTuple.pendingWrites ??
+          []) {
+          let writes = writesByTask.get(taskId);
+          if (writes == null) {
+            writes = [];
+            writesByTask.set(taskId, writes);
+          }
+          writes.push([channel, value]);
+        }
+        for (const [taskId, writes] of writesByTask) {
+          await this.checkpointer.putWrites(targetConfig, writes, taskId);
+        }
+        await this.checkpointer.put(
           {
             configurable: {
               thread_id: targetThreadId,
@@ -1747,19 +1770,6 @@ export class SubagentExecutor {
           },
           lineageTuple.checkpoint.channel_versions
         );
-        const writesByTask = new Map<string, Array<[string, unknown]>>();
-        for (const [taskId, channel, value] of lineageTuple.pendingWrites ??
-          []) {
-          let writes = writesByTask.get(taskId);
-          if (writes == null) {
-            writes = [];
-            writesByTask.set(taskId, writes);
-          }
-          writes.push([channel, value]);
-        }
-        for (const [taskId, writes] of writesByTask) {
-          await this.checkpointer.putWrites(storedConfig, writes, taskId);
-        }
       }
     }
   }
@@ -2626,6 +2636,9 @@ export class SubagentExecutor {
         signal: childSignal,
         callbacks,
         runName: `subagent:${subagentType}`,
+        ...(this.humanInTheLoop?.enabled === true && this.checkpointer != null
+          ? { durability: 'exit' as const }
+          : {}),
         configurable: childConfigurable,
       };
       activeChildRun.invokeConfig = childInvokeConfig;
