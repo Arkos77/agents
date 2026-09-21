@@ -1734,9 +1734,6 @@ export class SubagentExecutor {
             thread_id: targetThreadId,
             checkpoint_ns: checkpointNs,
             checkpoint_id: lineageTuple.checkpoint.id,
-            ...(parentCheckpointId == null
-              ? {}
-              : { checkpoint_id: lineageTuple.checkpoint.id }),
           },
         };
         const writesByTask = new Map<string, Array<[string, unknown]>>();
