@@ -172,6 +172,89 @@ const createExecutor = (
   });
 
 describe('SubagentExecutor lazy selected-subagent resolution', () => {
+  it('copies pending fork writes before the target checkpoint with its exact identity', async () => {
+    const checkpointer = new MemorySaver();
+    const source = {
+      threadId: 'source-child-thread',
+      checkpointNs: 'child:source-namespace',
+      checkpointId: 'source-child-checkpoint',
+    };
+    const sourceConfig = {
+      configurable: {
+        thread_id: source.threadId,
+        checkpoint_ns: source.checkpointNs,
+        checkpoint_id: source.checkpointId,
+      },
+    };
+    const checkpoint: Checkpoint = {
+      v: 4,
+      id: source.checkpointId,
+      ts: new Date().toISOString(),
+      channel_values: {},
+      channel_versions: {},
+      versions_seen: {},
+    };
+    const metadata: CheckpointMetadata = {
+      source: 'loop',
+      step: 0,
+      parents: {},
+    };
+    const pendingWrites = [
+      ['messages', 'child state'] as [string, unknown],
+      ['__interrupt__', { id: 'approval-1' }] as [string, unknown],
+    ];
+
+    await checkpointer.putWrites(sourceConfig, pendingWrites, 'child-task');
+    await checkpointer.put(
+      {
+        configurable: {
+          thread_id: source.threadId,
+          checkpoint_ns: source.checkpointNs,
+        },
+      },
+      checkpoint,
+      metadata
+    );
+
+    const putWrites = jest.spyOn(checkpointer, 'putWrites');
+    const put = jest.spyOn(checkpointer, 'put');
+    const executor = createExecutor(
+      [makeLazyConfig('researcher', async () => makeAgent())],
+      { checkpointer }
+    );
+    const forkTarget = executor as unknown as {
+      forkCheckpointSnapshot(
+        sources: ReadonlyArray<SubagentResumeExecution['checkpoints'][number]>,
+        targetThreadId: string
+      ): Promise<void>;
+    };
+    const targetThreadId = 'forked-child-thread';
+    const targetConfig = {
+      configurable: {
+        thread_id: targetThreadId,
+        checkpoint_ns: source.checkpointNs,
+        checkpoint_id: source.checkpointId,
+      },
+    };
+
+    await forkTarget.forkCheckpointSnapshot([source], targetThreadId);
+
+    expect(putWrites).toHaveBeenCalledWith(
+      targetConfig,
+      pendingWrites,
+      'child-task'
+    );
+    expect(putWrites.mock.invocationCallOrder[0]).toBeLessThan(
+      put.mock.invocationCallOrder[0]
+    );
+    await expect(checkpointer.getTuple(targetConfig)).resolves.toMatchObject({
+      pendingWrites: expect.arrayContaining([
+        ['child-task', 'messages', 'child state'],
+        ['child-task', '__interrupt__', { id: 'approval-1' }],
+      ]),
+    });
+  });
+
   it('resolves only the selected descriptor', async () => {
     const researcherResolver = jest.fn(async () =>
       makeAgent('lazy-researcher')

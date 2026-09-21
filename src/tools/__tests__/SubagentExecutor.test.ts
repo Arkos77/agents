@@ -2853,6 +2853,72 @@ describe('SubagentExecutor', () => {
       });
     });
 
+    it('uses exit durability only for checkpoint-backed HITL children', async () => {
+      const cases = [
+        {
+          name: 'checkpoint-backed HITL child',
+          humanInTheLoop: { enabled: true },
+          checkpointer: new MemorySaver(),
+          durability: 'exit',
+        },
+        {
+          name: 'HITL child without a checkpointer',
+          humanInTheLoop: { enabled: true },
+          durability: undefined,
+        },
+        {
+          name: 'non-HITL child with a checkpointer',
+          humanInTheLoop: undefined,
+          checkpointer: new MemorySaver(),
+          durability: undefined,
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        let invokeConfig: Record<string, unknown> | undefined;
+        const executor = createExecutor({
+          ...(testCase.humanInTheLoop == null
+            ? {}
+            : { humanInTheLoop: testCase.humanInTheLoop }),
+          ...(testCase.checkpointer == null
+            ? {}
+            : { checkpointer: testCase.checkpointer }),
+          createChildGraph: (): StandardGraph =>
+            ({
+              createWorkflow: () => ({
+                getState: jest.fn().mockResolvedValue({
+                  values: {},
+                  next: [],
+                  tasks: [],
+                }),
+                invoke: jest
+                  .fn()
+                  .mockImplementation(
+                    async (
+                      _input: unknown,
+                      config: Record<string, unknown>
+                    ): Promise<{ messages: BaseMessage[] }> => {
+                      invokeConfig = config;
+                      return { messages: [new AIMessage('done')] };
+                    }
+                  ),
+              }),
+              clearHeavyState: jest.fn(),
+            }) as unknown as StandardGraph,
+        });
+
+        await executor.execute({
+          description: testCase.name,
+          subagentType: config.type,
+          threadId: 'parent-thread',
+          parentToolCallId: 'call-durability',
+          parentConfigurable: { thread_id: 'parent-thread' },
+        });
+
+        expect(invokeConfig?.durability).toBe(testCase.durability);
+      }
+    });
+
     it('inherits parent thread_id when supplied (subagent is part of same conversation)', async () => {
       const { factory, getInvokeConfig } = makeCapturingGraphFactory();
       const executor = createExecutor({
